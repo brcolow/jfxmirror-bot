@@ -13,6 +13,7 @@ When building, make sure `JAVA_HOME` is set to Java 8. If not, you must pass the
 argument to `.\gradlew`.
 
 * Windows (cmd.exe): `-Dorg.gradle.java.home="%ProgramFiles%\Java\jdk1.8.0_152"`
+* Windows (powershell): `.\gradlew build "-Dorg.gradle.java.home=$env:PROGRAMFILES\Java\jdk1.8.0_152"`
 * *nix:
 
 Make sure to enter "org.javafxports.jfxmirror.Handler" as the handler.

@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Scanner;
 
 import javax.script.ScriptContext;
@@ -18,26 +19,28 @@ import javax.script.SimpleScriptContext;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestStreamHandler;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.eclipsesource.json.Json;
+import com.eclipsesource.json.JsonObject;
+import com.eclipsesource.json.JsonValue;
 
 public class Handler implements RequestStreamHandler {
 
     @Override
     public void handleRequest(InputStream inputStream, OutputStream outputStream, Context context) throws IOException {
         // https://developer.github.com/v3/activity/events/types/#pullrequestevent
-        JsonNode pullRequestEvent = new ObjectMapper().readTree(inputStream);
+        JsonObject pullRequestEvent = Json.parse(new InputStreamReader(inputStream, StandardCharsets.UTF_8)).asObject();
 
-        String action = pullRequestEvent.get("action").asText();
-        String username = pullRequestEvent.get("pull_request").get("user").get("login").asText();
-        String diffUrl = pullRequestEvent.get("pull_request").get("diff_url").asText();
-        String patchUrl = pullRequestEvent.get("pull_request").get("patch_url").asText();
+        String action = pullRequestEvent.get("action").asString();
+        JsonObject pullRequest = pullRequestEvent.get("pull_request").asObject();
+        String username = pullRequest.get("user").asObject().get("login").asString();
+        String diffUrl = pullRequest.get("diff_url").asString();
+        String patchUrl = pullRequest.get("patch_url").asString();
 
-        if (pullRequestEvent.get("pull_request").has("labels")) {
+        if (pullRequest.get("labels") != null) {
             context.getLogger().log("This pull request has one or more labels");
 
-            for (JsonNode labelNode : pullRequestEvent.get("pull_request").get("labels")) {
-                context.getLogger().log("Label name: " + labelNode.get("name"));
+            for (JsonValue label : pullRequest.get("labels").asArray()) {
+                context.getLogger().log("Label name: " + label.asObject().get("name"));
             }
         }
         context.getLogger().log("Action: " + action);
