@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public class PullRequestService {
+
     @POST
     @Path("/pr")
     @Consumes(MediaType.APPLICATION_JSON)
