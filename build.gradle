@@ -1,13 +1,23 @@
 apply plugin: 'java'
+apply plugin: 'application'
+
+mainClassName = "org.javafxports.jfxmirror.Bot"
 
 sourceCompatibility = 1.8
 targetCompatibility = 1.8
 
 repositories {
     mavenCentral()
+    maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
 }
 
 dependencies {
+    compile group: 'org.glassfish.jersey.containers', name: 'jersey-container-grizzly2-http', version: '2.26'
+    compile group: 'org.glassfish.jersey.inject', name: 'jersey-hk2', version: '2.26'
+    compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.9.4'
+    compile group: 'com.fasterxml.jackson.jaxrs', name: 'jackson-jaxrs-json-provider', version: '2.9.4'
+    compile group: 'com.aragost.javahg', name: 'javahg', version: '0.5-SNAPSHOT'
+
     compile (
         'com.amazonaws:aws-lambda-java-core:1.1.0',
         'com.amazonaws:aws-lambda-java-events:1.1.0',
@@ -15,18 +25,3 @@ dependencies {
         'org.python:jython:2.7.0'
     )
 }
-
-if (JavaVersion.current() != JavaVersion.VERSION_1_8 ){
-    throw new GradleException("jfxmirror-bot must be built with Java 8")
-}
-
-task buildZip(type: Zip) {
-    from compileJava
-    from processResources
-    into('lib') {
-        from configurations.runtime
-    }
-}
-
-
-build.dependsOn buildZip
