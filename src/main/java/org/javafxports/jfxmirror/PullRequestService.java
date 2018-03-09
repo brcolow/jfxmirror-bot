@@ -124,6 +124,17 @@ public class PullRequestService {
 
         System.out.println("\n\n-- HG PATCH --\n\n");
         System.out.println(hgPatch);
+
+        // Apply the hg patch to the upstream hg repo
+
+        // Check if user who opened PR has signed the OCA
+
+        // Generate a webrev
+
+        // Run jcheck
+
+        // Make status page from the above, set status to success/fail depending on the above
+
         return Response.ok().build();
     }
 
