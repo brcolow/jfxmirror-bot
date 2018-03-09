@@ -8,6 +8,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Locale;
@@ -30,6 +31,13 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
 
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.jsoup.select.Selector;
+
+import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.ImportCommand;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -38,6 +46,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 @Path("/")
 public class PullRequestService {
 
+    private static final String osName = System.getProperty("os.name").toLowerCase(Locale.US);
     private static final String githubApi = "https://api.github.com";
     private static final String githubAccept = "application/vnd.github.v3+json";
     private static final String githubAccessToken = System.getenv("jfxmirror_gh_token");
@@ -98,14 +107,18 @@ public class PullRequestService {
         JsonNode pullRequest = pullRequestEvent.get("pull_request");
         String prNum = pullRequest.get("number").asText();
         String prShaHead = pullRequest.get("head").get("sha").asText();
+        System.out.println("Pr num: " + prNum);
+        System.out.println("Pr SHA head: " + prShaHead);
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", "pending");
         pendingStatus.put("target_url", String.format("http://jfxmirror_bot.com/%s/%s", prNum, prShaHead));
         pendingStatus.put("description", "Checking for upstream mergeability...");
         pendingStatus.put("context", "jfxmirror_bot");
 
-        String[] repoFullName = pullRequest.get("repository").get("full_name").asText().split("/");
+        String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
+        System.out.println("Repo full name: " + Arrays.toString(repoFullName));
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", githubApi, repoFullName[0], repoFullName[1], prShaHead);
+        System.out.println("Setting status of URL: " + statusUrl);
         Response statusResponse = Bot.httpClient.target(statusUrl)
                 .request()
                 .header("Authorization", "token " + githubAccessToken)
@@ -163,12 +176,38 @@ public class PullRequestService {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
-        } catch (IOException e) {
+        } catch (IOException | ExecutionException e) {
             System.err.println("Could not import changes to upstream mercurial repository:");
             e.printStackTrace();
         }
 
-        // Check if user who opened PR has signed the OCA
+        System.out.println("Checking if \"" + username + "\" has signed the OCA...");
+
+        // Check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
+        // We will keep a simple file of OCA confirmations where each line maps a github username (and user id?) to
+        // their listed name on the OCA page.
+
+        // If "username" is in our oca.txt file:
+        //   Status for OCA signature should be confirmed, list under what name
+        // Else:
+        //   See if we can find their username on the OCA list, if so, post a comment asking on the PR if that's them
+        //   and how they should reply if it is/is not.
+        //   If we can't find them on the list, tell them so and provide instructions for them to either give their OCA
+        //   name or to sign the OCA.
+        try {
+            Document doc = Jsoup.connect("http://www.oracle.com/technetwork/community/oca-486395.html").get();
+            Elements signatoryLetters = doc.select(".dataTable > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(1) > ul:nth-child(2n+5)");
+            for (Element signatoryLetter : signatoryLetters) {
+                Elements signatories = signatoryLetter.select("li");
+                for (Element signatory : signatories) {
+                    System.out.println("Signature: " + signatory.text());
+                    // Split on "-" of signatory.text(), [0] will be the first/last name (or company name)
+                }
+            }
+        } catch (Selector.SelectorParseException | IOException e) {
+            e.printStackTrace();
+        }
+
 
         // See if there is a JBS bug associated with this PR (how? commit message?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
@@ -182,11 +221,20 @@ public class PullRequestService {
         // Generate a webrev
         java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
 
+        ProcessBuilder processBuilder;
+        if (osName.contains("windows")) {
+            // Calling ksh to generate webrev requires having bash in the Windows %PATH%:
+            String kshInvocation = "\"ksh " +
+                    Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString()
+                    + " -N -m -o " + webRevOutputPath.toString().replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") + "\"";
+            processBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
+        } else {
+            processBuilder = new ProcessBuilder("ksh",
+                    Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
+                    "-N", "-m",
+                    "-o", webRevOutputPath.toString());
+        }
         // TODO: Add -c argument for the bug ID when we implenment JBS bugs
-        ProcessBuilder processBuilder = new ProcessBuilder("ksh",
-                Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
-                "-N", "-m",
-                "-o", webRevOutputPath.toString());
         processBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
             processBuilder.inheritIO();

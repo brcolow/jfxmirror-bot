@@ -78,7 +78,7 @@ public class Bot {
             }
 
             System.out.println("Downloading \"webrev.ksh\"...");
-            try (InputStream in = URI.create("hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh").toURL().openStream()) {
+            try (InputStream in = URI.create("http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh").toURL().openStream()) {
                 Files.copy(in, webrevPath.resolve("webrev.ksh"));
             } catch (IOException e) {
                 System.err.println("Could not download \"webrev.ksh\":");
