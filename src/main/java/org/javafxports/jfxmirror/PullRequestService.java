@@ -1,25 +1,24 @@
 package org.javafxports.jfxmirror;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.StringReader;
-import java.io.StringWriter;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
 import java.util.Scanner;
-import java.util.stream.Stream;
 
-import javax.script.ScriptContext;
-import javax.script.ScriptEngine;
-import javax.script.ScriptEngineManager;
-import javax.script.ScriptException;
-import javax.script.SimpleScriptContext;
+import javax.mail.Header;
+import javax.mail.MessagingException;
+import javax.mail.Session;
+import javax.mail.internet.MimeMessage;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
@@ -31,6 +30,7 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
 
+import com.aragost.javahg.commands.ImportCommand;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -121,21 +121,45 @@ public class PullRequestService {
         String diffUrl = pullRequest.get("diff_url").asText();
         String patchUrl = pullRequest.get("patch_url").asText();
 
-        // Convert the pull-request from a git patch to an hg patch.
-        java.nio.file.Path hgPatchPath;
+        String hgPatch;
         try {
-            hgPatchPath = convertGitPatchToHgPatch(patchUrl);
+            hgPatch = convertGitPatchToHgPatch(patchUrl);
             System.out.println("\n\n-- HG PATCH --\n\n");
-            try (Stream<String> lines = Files.lines(hgPatchPath, StandardCharsets.UTF_8)) {
-                lines.forEach(System.out::println);
-            }
-        } catch (Exception e) {
-            // set status to failed and return.
-            System.err.println("Error: Could not convert git patch to hg patch:");
+            System.out.println(hgPatch);
+
+        } catch (IOException | MessagingException e) {
+            System.err.println("Exception: " + e.getMessage());
             e.printStackTrace();
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
+        String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
+        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "patches");
+        if (!patchesDir.toFile().exists()) {
+            try {
+                Files.createDirectories(patchesDir);
+            } catch (IOException e) {
+                System.err.println("Could not create patches directory");
+                e.printStackTrace();
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+        }
+        java.nio.file.Path patchPath = patchesDir.resolve(patchFilename);
+        try {
+            Files.write(patchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            System.err.println("Could not write mercurial patch to file");
+            e.printStackTrace();
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
 
+        try {
+            ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
+            importCommand.cmdAppend("--no-commit");
+            importCommand.execute(patchPath.toFile());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
         // Apply the hg patch to the upstream hg repo
 
         // Check if user who opened PR has signed the OCA
@@ -150,41 +174,26 @@ public class PullRequestService {
     }
 
     /**
-     * Takes as input the URL to a git patch, downloads it to ~/jfxmirror/patches/the.patch, and then transforms
-     * it in-place to an equivalent mercurial patch.
+     * Based on https://github.com/mozilla/moz-git-tools/blob/master/git-patch-to-hg-patch
      */
-    private static java.nio.file.Path convertGitPatchToHgPatch(String patchUrl) throws ScriptException, IOException {
-        //String gitPatch = new Scanner(new URL(patchUrl).openStream(), "UTF-8").useDelimiter("\\A").next();
-        //System.out.println("Raw git patch:\n\n");
-        //System.out.println(gitPatch);
-        //StringWriter scriptOut = new StringWriter();
-        ScriptEngineManager manager = new ScriptEngineManager();
-        ScriptContext context = new SimpleScriptContext();
-        String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
-        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "patches");
-        if (!patchesDir.toFile().exists()) {
-            try {
-                Files.createDirectories(patchesDir);
-            } catch (IOException e) {
-                System.err.println("Could not create patches directory");
-            }
+    private static String convertGitPatchToHgPatch(String patchUrl) throws IOException, MessagingException {
+        String gitPatch = new Scanner(new URL(patchUrl).openStream(), "UTF-8").useDelimiter("\\A").next();
+        Session session = Session.getDefaultInstance(new Properties());
+        MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(StandardCharsets.UTF_8)));
+        Map<String, String> headers = enumToMap(emailMessage.getAllHeaders());
+        return "# HG changeset patch\n" +
+                "# User " + headers.get("From") + "\n" +
+                "# Date " + headers.get("Date") + "\n\n" +
+                emailMessage.getSubject().replaceAll("^\\[PATCH( \\d+/\\d+)?\\] ", "") + "\n\n" +
+                emailMessage.getContent().toString().replaceAll("--\\s?\\n[0-9\\.]+\\n$", "");
+    }
+
+    private static Map<String, String> enumToMap(Enumeration<Header> headers) {
+        HashMap<String, String> headersMap = new HashMap<>();
+        while (headers.hasMoreElements()) {
+            Header header = headers.nextElement();
+            headersMap.put(header.getName(), header.getValue());
         }
-        java.nio.file.Path patchPath = patchesDir.resolve(patchFilename);
-        try (InputStream in = URI.create(patchUrl).toURL().openStream()) {
-            Files.copy(in, patchPath);
-        }
-        context.setAttribute(ScriptEngine.ARGV, new String[] { patchFilename }, ScriptContext.ENGINE_SCOPE);
-        //context.setWriter(scriptOut);
-        //context.setReader(new StringReader(gitPatch));
-        StringWriter scriptErr = new StringWriter();
-        context.setErrorWriter(scriptErr);
-        ScriptEngine engine = manager.getEngineByName("python");
-        engine.eval(new BufferedReader(new InputStreamReader(
-                PullRequestService.class.getResourceAsStream("/git-patch-to-hg-patch"))), context);
-        String err = scriptErr.toString();
-        if (!err.isEmpty()) {
-            System.err.println("Python error: " + scriptErr.toString());
-        }
-        return patchPath;
+        return headersMap;
     }
 }
