@@ -2,6 +2,14 @@
 
 Helps contributors to the OpenJFX GitHub get their changes accepted into OpenJFX upstream.
 
+## Setup
+
+A webhook must be added to the `javafxports/openjdk-jfx` GitHub repository so that pull request events are sent (pushed)
+to the bot. There is a simple GitHub guide about [creating webhooks](https://developer.github.com/webhooks/creating/).
+For our use-case, the payload URL should be set to `http://${SERVER_URL}/pr` where `${SERVER_URL}` is the URL of the
+server running this bot, the content type should be `application/json`, and the only trigger event that should be
+checked is `Pull request`.
+
 ## Running The Bot
 
 Create a GitHub [personal access token](https://github.com/settings/tokens) for jfxmirror_bot. No scopes

@@ -68,7 +68,6 @@ public class Handler implements RequestStreamHandler {
 
     }
 
-
     /**
      * Takes as input the URL to a git patch and returns the equivalent hg patch.
      */

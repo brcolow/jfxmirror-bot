@@ -8,32 +8,28 @@ import java.nio.file.Paths;
 
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
-import javax.ws.rs.client.Entity;
-import javax.ws.rs.core.Response;
 import javax.ws.rs.core.UriBuilder;
 
 import org.glassfish.grizzly.http.server.HttpServer;
 import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
+import org.glassfish.jersey.logging.LoggingFeature;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.glassfish.jersey.server.ServerProperties;
+import org.slf4j.bridge.SLF4JBridgeHandler;
 
 import com.aragost.javahg.Repository;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
 
 public class Bot {
 
     protected static Client httpClient;
     protected static Repository upstreamRepo;
-    private static final String githubApi = "https://api.github.com";
-    private static final String githubAccept = "application/vnd.github.v3+json";
+    private static HttpServer httpServer;
     private static final String upstreamRepoUrl = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
     private static final Path upstreamRepoPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
 
     public static void main(String[] args) {
-        String githubAccessToken = System.getenv("jfxmirror_gh_token");
-        if (githubAccessToken == null) {
+        if (System.getenv("jfxmirror_gh_token") == null) {
             System.err.println("Environment variable \"jfxmirror_gh_token\" not set.");
             System.err.println("This must be set to your personal access token created for jfxmirror_bot.");
             System.err.println("You can create an access token by going to: https://github.com/settings/tokens");
@@ -42,28 +38,11 @@ public class Bot {
 
         httpClient = ClientBuilder.newClient();
 
-        // Move this to PullRequestService. It would be nice to use https://developer.github.com/v3/oauth_authorizations/#check-an-authorization
+        // It would be nice to use https://developer.github.com/v3/oauth_authorizations/#check-an-authorization
         // for checking the validity of the githubAccessToken, but that requires registering an OAuth App (and that
-        // is more complicated than just using a personal access token). So, once this is moved to PullRequestService,
-        // if the token is invalid the user won't know until a PR event comes in.
-        ObjectNode statusObject = JsonNodeFactory.instance.objectNode();
-        statusObject.put("state", "pending"); // error, failure, pending, or success
-        statusObject.put("target_url", "http://jfxmirror_bot.com/123");
-        statusObject.put("description", "Checking for upstream mergeability...");
-        statusObject.put("context", "jfxmirror_bot");
+        // is more complicated than just using a personal access token). So the user will only be notified that their
+        // github access token is invalid when a PR event comes in.
 
-        Response statusResponse = httpClient.target(String.format(
-                "%s/repos/%s/%s/statuses/%s", githubApi, "brcolow", "openjfx", "7e3bd03605db8298cfa7ce10835b40b8bef90466"))
-                .request()
-                .header("Authorization", "token " + githubAccessToken)
-                .accept(githubAccept)
-                .post(Entity.json(statusObject.toString()));
-
-        if (statusResponse.getStatus() == 404) {
-            System.err.println("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
-                    "environment variable is set correctly?");
-            System.exit(1);
-        }
 
         if (!Files.exists(upstreamRepoPath)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
@@ -87,13 +66,20 @@ public class Bot {
         System.out.println("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
         System.out.println("Using mercurial version: " + upstreamRepo.getHgVersion());
 
+        // Jersey uses java.util.logging - bridge to slf4
+        SLF4JBridgeHandler.removeHandlersForRootLogger();
+        SLF4JBridgeHandler.install();
+
         ResourceConfig resourceConfig = new ResourceConfig()
                 .packages("org.javafxports.jfxmirror")
                 .property(ServerProperties.WADL_FEATURE_DISABLE, true)
+                .property(ServerProperties.TRACING, "ALL")
+                .property(ServerProperties.TRACING_THRESHOLD, "VERBOSE")
+                .register(LoggingFeature.class)
                 .register(JacksonJaxbJsonProvider.class);
-        HttpServer httpServer = GrizzlyHttpServerFactory.createHttpServer(getBaseURI(), resourceConfig);
+        httpServer = GrizzlyHttpServerFactory.createHttpServer(URI.create("http://localhost:8433/"), resourceConfig);
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> cleanup(httpServer), "shutdownHook"));
+        Runtime.getRuntime().addShutdownHook(new Thread(Bot::cleanup, "shutdownHook"));
 
         try {
             httpServer.start();
@@ -101,18 +87,14 @@ public class Bot {
             Thread.currentThread().join();
         } catch (Exception e) {
             e.printStackTrace();
-            cleanup(httpServer);
+            cleanup();
             System.exit(1);
         }
     }
 
-    private static void cleanup(HttpServer httpServer) {
+    protected static void cleanup() {
         upstreamRepo.close();
         System.out.println("Stopping HTTP server..");
         httpServer.shutdownNow();
-    }
-
-    private static URI getBaseURI() {
-        return UriBuilder.fromUri("http://localhost/").port(8433).build();
     }
 }
