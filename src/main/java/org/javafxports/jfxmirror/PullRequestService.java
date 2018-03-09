@@ -95,18 +95,22 @@ public class PullRequestService {
         // Also, look at JBS for mercurial patches to compare to git patches.
 
         // Set the status of the PR to pending while we do the necessary checks.
-        ObjectNode statusObject = JsonNodeFactory.instance.objectNode();
-        statusObject.put("state", "pending");
-        statusObject.put("target_url", "http://jfxmirror_bot.com/123");
-        statusObject.put("description", "Checking for upstream mergeability...");
-        statusObject.put("context", "jfxmirror_bot");
+        JsonNode pullRequest = pullRequestEvent.get("pull_request");
+        String prNum = pullRequest.get("number").asText();
+        String prShaHead = pullRequest.get("head").get("sha").asText();
+        ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
+        pendingStatus.put("state", "pending");
+        pendingStatus.put("target_url", String.format("http://jfxmirror_bot.com/%s/%s", prNum, prShaHead));
+        pendingStatus.put("description", "Checking for upstream mergeability...");
+        pendingStatus.put("context", "jfxmirror_bot");
 
-        Response statusResponse = Bot.httpClient.target(String.format(
-                "%s/repos/%s/%s/statuses/%s", githubApi, "brcolow", "openjfx", "7e3bd03605db8298cfa7ce10835b40b8bef90466"))
+        String[] repoFullName = pullRequest.get("repository").get("full_name").asText().split("/");
+        String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", githubApi, repoFullName[0], repoFullName[1], prShaHead);
+        Response statusResponse = Bot.httpClient.target(statusUrl)
                 .request()
                 .header("Authorization", "token " + githubAccessToken)
                 .accept(githubAccept)
-                .post(Entity.json(statusObject.toString()));
+                .post(Entity.json(pendingStatus.toString()));
 
         System.out.println("Status response: " + statusResponse);
         if (statusResponse.getStatus() == 404) {
@@ -116,59 +120,86 @@ public class PullRequestService {
             System.exit(1);
         }
 
-        JsonNode pullRequest = pullRequestEvent.get("pull_request");
         String username = pullRequest.get("user").get("login").asText();
         String diffUrl = pullRequest.get("diff_url").asText();
         String patchUrl = pullRequest.get("patch_url").asText();
 
+        // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
+        // Currently we lose the commit messages of all but the first commit.
         String hgPatch;
         try {
             hgPatch = convertGitPatchToHgPatch(patchUrl);
-            System.out.println("\n\n-- HG PATCH --\n\n");
-            System.out.println(hgPatch);
-
         } catch (IOException | MessagingException e) {
             System.err.println("Exception: " + e.getMessage());
             e.printStackTrace();
+            // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
-        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "patches");
+        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "patch", prNum, prShaHead);
         if (!patchesDir.toFile().exists()) {
             try {
                 Files.createDirectories(patchesDir);
             } catch (IOException e) {
                 System.err.println("Could not create patches directory");
                 e.printStackTrace();
+                // TODO: Don't return, set the PR status to failed with an explanation
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
-        java.nio.file.Path patchPath = patchesDir.resolve(patchFilename);
+        java.nio.file.Path hgPatchPath = patchesDir.resolve(patchFilename);
         try {
-            Files.write(patchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
+            Files.write(hgPatchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             System.err.println("Could not write mercurial patch to file");
             e.printStackTrace();
+            // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
+        // Apply the hg patch to the upstream hg repo
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
-            importCommand.cmdAppend("--no-commit");
-            importCommand.execute(patchPath.toFile());
+            // importCommand.cmdAppend("--no-commit");
+            importCommand.execute(hgPatchPath.toFile());
         } catch (IOException e) {
+            System.err.println("Could not import changes to upstream mercurial repository:");
             e.printStackTrace();
         }
-        // Apply the hg patch to the upstream hg repo
 
         // Check if user who opened PR has signed the OCA
 
+        // See if there is a JBS bug associated with this PR (how? commit message?)
+        // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
+        // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
+
+        // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
+        // This looks to be a mercurial extension. javahg should support those, see for example:
+        // ExtensionTest.java: https://bitbucket.org/aragost/javahg/src/tip/src/test/java/com/aragost/javahg/ExtensionTest.java
+        // MercurialExtension.java: https://bitbucket.org/aragost/javahg/src/tip/src/main/java/com/aragost/javahg/MercurialExtension.java
+
         // Generate a webrev
+        java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
 
-        // Run jcheck
+        // TODO: Add -c argument for the bug ID when we implenment JBS bugs
+        ProcessBuilder processBuilder = new ProcessBuilder("ksh",
+                Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
+                "-N", "-m",
+                "-o", webRevOutputPath.toString());
+        processBuilder.directory(Bot.upstreamRepo.getDirectory());
+        try {
+            processBuilder.inheritIO();
+            System.out.println("Generating webrev for PR #" + prNum + "...");
+            Process webrev = processBuilder.start();
+        } catch (IOException e) {
+            System.err.println("Error encountered generating webrev:");
+            e.printStackTrace();
+            // TODO: Don't return, set the PR status to failed with an explanation
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
 
-        // Make status page from the above, set status to success/fail depending on the above
+        // Make status page at "prNum/prShaHead" from the above data, set status to success/fail depending on the above
 
         return Response.ok().build();
     }

@@ -1,6 +1,8 @@
 package org.javafxports.jfxmirror;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,7 +44,6 @@ public class Bot {
         // is more complicated than just using a personal access token). So the user will only be notified that their
         // github access token is invalid when a PR event comes in.
 
-
         if (!Files.exists(upstreamRepoPath)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
             System.out.println("Upstream mercurial repository directory not found, creating it...");
@@ -64,6 +65,29 @@ public class Bot {
 
         System.out.println("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
         System.out.println("Using mercurial version: " + upstreamRepo.getHgVersion());
+
+        System.out.println("Checking for \"webrev.ksh\"...");
+        Path webrevPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev");
+        if (!Files.exists(webrevPath)) {
+            try {
+                Files.createDirectories(webrevPath);
+            } catch (IOException e) {
+                System.err.println("Could not create directory for \"webrev.ksh\":");
+                e.printStackTrace();
+                System.exit(1);
+            }
+
+            System.out.println("Downloading \"webrev.ksh\"...");
+            try (InputStream in = URI.create("hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh").toURL().openStream()) {
+                Files.copy(in, webrevPath.resolve("webrev.ksh"));
+            } catch (IOException e) {
+                System.err.println("Could not download \"webrev.ksh\":");
+                e.printStackTrace();
+                System.exit(1);
+            }
+        } else {
+            System.out.println("Found \"webrev.ksh\"");
+        }
 
         // Jersey uses java.util.logging - bridge to slf4
         SLF4JBridgeHandler.removeHandlersForRootLogger();
