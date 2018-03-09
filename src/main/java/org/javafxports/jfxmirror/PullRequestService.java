@@ -2,12 +2,18 @@ package org.javafxports.jfxmirror;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.net.URI;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.Locale;
 import java.util.Scanner;
+import java.util.stream.Stream;
 
 import javax.script.ScriptContext;
 import javax.script.ScriptEngine;
@@ -81,6 +87,7 @@ public class PullRequestService {
                 return Response.ok().build();
         }
 
+        System.out.println("Got pull request, with action: " + action);
         // Should the bot generate static content or should it be database driven?
         // If it's static, it might be challenging if we want to have an index page
         // that shows the historical reports.
@@ -101,6 +108,7 @@ public class PullRequestService {
                 .accept(githubAccept)
                 .post(Entity.json(statusObject.toString()));
 
+        System.out.println("Status response: " + statusResponse);
         if (statusResponse.getStatus() == 404) {
             System.err.println("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
                     "environment variable is set correctly?");
@@ -114,16 +122,19 @@ public class PullRequestService {
         String patchUrl = pullRequest.get("patch_url").asText();
 
         // Convert the pull-request from a git patch to an hg patch.
-        String hgPatch = null;
+        java.nio.file.Path hgPatchPath;
         try {
-            hgPatch = convertGitPatchToHgPatch(patchUrl);
-        } catch (IOException | ScriptException e) {
+            hgPatchPath = convertGitPatchToHgPatch(patchUrl);
+            System.out.println("\n\n-- HG PATCH --\n\n");
+            try (Stream<String> lines = Files.lines(hgPatchPath, StandardCharsets.UTF_8)) {
+                lines.forEach(System.out::println);
+            }
+        } catch (Exception e) {
+            // set status to failed and return.
             System.err.println("Error: Could not convert git patch to hg patch:");
             e.printStackTrace();
         }
 
-        System.out.println("\n\n-- HG PATCH --\n\n");
-        System.out.println(hgPatch);
 
         // Apply the hg patch to the upstream hg repo
 
@@ -139,18 +150,41 @@ public class PullRequestService {
     }
 
     /**
-     * Takes as input the URL to a git patch and returns the equivalent hg patch.
+     * Takes as input the URL to a git patch, downloads it to ~/jfxmirror/patches/the.patch, and then transforms
+     * it in-place to an equivalent mercurial patch.
      */
-    private static String convertGitPatchToHgPatch(String patchUrl) throws ScriptException, IOException {
-        String gitPatch = new Scanner(new URL(patchUrl).openStream(), "UTF-8").useDelimiter("\\A").next();
-        StringWriter scriptOut = new StringWriter();
+    private static java.nio.file.Path convertGitPatchToHgPatch(String patchUrl) throws ScriptException, IOException {
+        //String gitPatch = new Scanner(new URL(patchUrl).openStream(), "UTF-8").useDelimiter("\\A").next();
+        //System.out.println("Raw git patch:\n\n");
+        //System.out.println(gitPatch);
+        //StringWriter scriptOut = new StringWriter();
         ScriptEngineManager manager = new ScriptEngineManager();
         ScriptContext context = new SimpleScriptContext();
-        context.setWriter(scriptOut);
-        context.setReader(new StringReader(gitPatch));
+        String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
+        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "patches");
+        if (!patchesDir.toFile().exists()) {
+            try {
+                Files.createDirectories(patchesDir);
+            } catch (IOException e) {
+                System.err.println("Could not create patches directory");
+            }
+        }
+        java.nio.file.Path patchPath = patchesDir.resolve(patchFilename);
+        try (InputStream in = URI.create(patchUrl).toURL().openStream()) {
+            Files.copy(in, patchPath);
+        }
+        context.setAttribute(ScriptEngine.ARGV, new String[] { patchFilename }, ScriptContext.ENGINE_SCOPE);
+        //context.setWriter(scriptOut);
+        //context.setReader(new StringReader(gitPatch));
+        StringWriter scriptErr = new StringWriter();
+        context.setErrorWriter(scriptErr);
         ScriptEngine engine = manager.getEngineByName("python");
         engine.eval(new BufferedReader(new InputStreamReader(
-                Handler.class.getResourceAsStream("/git-patch-to-hg-patch"))), context);
-        return scriptOut.toString();
+                PullRequestService.class.getResourceAsStream("/git-patch-to-hg-patch"))), context);
+        String err = scriptErr.toString();
+        if (!err.isEmpty()) {
+            System.err.println("Python error: " + scriptErr.toString());
+        }
+        return patchPath;
     }
 }
