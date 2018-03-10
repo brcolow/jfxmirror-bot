@@ -2,13 +2,10 @@ package org.javafxports.jfxmirror;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Locale;
@@ -21,8 +18,10 @@ import javax.mail.MessagingException;
 import javax.mail.Session;
 import javax.mail.internet.MimeMessage;
 import javax.ws.rs.Consumes;
+import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.container.ContainerRequestContext;
@@ -48,11 +47,43 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 @Path("/")
 public class PullRequestService {
 
+    private static final java.nio.file.Path staticBasePath = Paths.get(System.getProperty("user.home"), "jfxmirror");
     private static final String osName = System.getProperty("os.name").toLowerCase(Locale.US);
     private static final String githubApi = "https://api.github.com";
     private static final String githubAccept = "application/vnd.github.v3+json";
     private static final String githubAccessToken = System.getenv("jfxmirror_gh_token");
     private static final Logger logger = LoggerFactory.getLogger(PullRequestService.class);
+
+    /**
+     * Handles requests to static files from ~/jfxmirror/pr, such as ~/jfxmirror/pr/{num}/{sha}/index.html.
+     * <p>
+     * Assume jfxmirror_bot's HTTP server is listening on port 8433 and the URL is http://server.com. In that
+     * case this endpoint is triggered when requesting an URL of the form:
+     * <p>
+     * {@code http://server.com:8433/pr/{some}/{path}/file.ext}
+     * <p>
+     * Where the path after "/pr/" can be of arbitrary depth. In the above case this method will be called with
+     * {@code path = "{some}/{path}/file"} and {@code ext = "ext"} and will return (serve) the file at
+     * {@code ~/jfxmirror/pr/{some}/{path}/file.ext}.
+     */
+    @GET
+    @Path("/pr/{path:.*}.{ext}")
+    public Response serveFile(@PathParam("path") String path, @PathParam("ext") String ext) {
+        return Response.ok(staticBasePath.resolve("pr").resolve(path + "." + ext).toFile()).build();
+    }
+
+    /**
+     * Handles requests to static directories from ~/jfxmirror/pr, such as ~/jfxmirror/pr/{num}/{sha} by
+     * returning the "index.html" contained therein (if it exists).
+     * <p>
+     * Same as {@link #serveFile(String, String)} except instead of requesting a specific file, a directory
+     * is requested and we act like a webserver that returns the index.html contained therein.
+     */
+    @GET
+    @Path("/pr/{path:.*}")
+    public Response serveIndex(@PathParam("path") String path) {
+        return Response.ok(staticBasePath.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
+    }
 
     @POST
     @Path("/pr")
@@ -99,52 +130,27 @@ public class PullRequestService {
                 return Response.ok().build();
         }
 
-        logger.info("Got pull request, with action: " + action);
-        // Should the bot generate static content or should it be database driven?
-        // If it's static, it might be challenging if we want to have an index page
-        // that shows the historical reports.
-
-        // Also, look at JBS for mercurial patches to compare to git patches.
-
-        // Set the status of the PR to pending while we do the necessary checks.
         JsonNode pullRequest = pullRequestEvent.get("pull_request");
         String prNum = pullRequest.get("number").asText();
         String prShaHead = pullRequest.get("head").get("sha").asText();
-        ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
-        pendingStatus.put("state", "pending");
-        pendingStatus.put("target_url", String.format("http://jfxmirror_bot.com/%s/%s", prNum, prShaHead));
-        pendingStatus.put("description", "Checking for upstream mergeability...");
-        pendingStatus.put("context", "jfxmirror_bot");
+        logger.info("Event: Pull request #" + prNum + " " + action);
 
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", githubApi, repoFullName[0], repoFullName[1], prShaHead);
-        Response statusResponse = Bot.httpClient.target(statusUrl)
-                .request()
-                .header("Authorization", "token " + githubAccessToken)
-                .accept(githubAccept)
-                .post(Entity.json(pendingStatus.toString()));
 
-        logger.info("Status response: " + statusResponse);
-        if (statusResponse.getStatus() == 404) {
-            logger.error("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
-                    "environment variable is set correctly?");
-            Bot.cleanup();
-            System.exit(1);
-        }
-
-        String username = pullRequest.get("user").get("login").asText();
-        String diffUrl = pullRequest.get("diff_url").asText();
-        String patchUrl = pullRequest.get("patch_url").asText();
+        // Set the status of the PR to pending while we do the necessary checks.
+        setPrStatus(PrStatus.PENDING, statusUrl, "Checking for upstream mergeability...");
 
         // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
         // Currently we lose the commit messages of all but the first commit.
+        String patchUrl = pullRequest.get("patch_url").asText();
         String hgPatch;
         try {
             hgPatch = convertGitPatchToHgPatch(patchUrl);
         } catch (IOException | MessagingException e) {
+            setPrStatus(PrStatus.ERROR, statusUrl, "Could not convert git to hg patch.");
             logger.error("Exception: " + e.getMessage());
             e.printStackTrace();
-            // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
@@ -154,9 +160,9 @@ public class PullRequestService {
             try {
                 Files.createDirectories(patchesDir);
             } catch (IOException e) {
+                setPrStatus(PrStatus.ERROR, statusUrl, "Could not create patches directory.");
                 logger.error("Could not create patches directory");
                 e.printStackTrace();
-                // TODO: Don't return, set the PR status to failed with an explanation
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
@@ -164,9 +170,9 @@ public class PullRequestService {
         try {
             Files.write(hgPatchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            logger.error("Could not write mercurial patch to file");
+            setPrStatus(PrStatus.ERROR, statusUrl, "Could not write hg patch to file.");
+            logger.error("Could not write hg patch to file");
             e.printStackTrace();
-            // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
@@ -176,10 +182,13 @@ public class PullRequestService {
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
         } catch (IOException | ExecutionException e) {
-            logger.error("Could not import changes to upstream mercurial repository:");
+            setPrStatus(PrStatus.FAILURE, statusUrl, "Could not apply PR changes to upstream hg repository.");
+            logger.error("Could not import changes to upstream mercurial repository");
             e.printStackTrace();
+            // return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
+        String username = pullRequest.get("user").get("login").asText();
         logger.info("Checking if \"" + username + "\" has signed the OCA...");
 
         // Check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
@@ -204,11 +213,12 @@ public class PullRequestService {
                 }
             }
         } catch (Selector.SelectorParseException | IOException e) {
+            logger.error("Could not extract list of OCA signatures");
             e.printStackTrace();
         }
 
 
-        // See if there is a JBS bug associated with this PR (how? commit message?)
+        // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
         // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
 
@@ -244,15 +254,56 @@ public class PullRequestService {
             logger.info("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
             Process webrev = processBuilder.start();
         } catch (IOException e) {
+            setPrStatus(PrStatus.ERROR, statusUrl, "Could not generate webrev for PR.");
             logger.error("Error encountered generating webrev:");
             e.printStackTrace();
-            // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         // Make status page at "prNum/prShaHead" from the above data, set status to success/fail depending on the above
+        java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead);
+        if (!statusPath.toFile().exists()) {
+            try {
+                Files.createDirectories(statusPath);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // Should we use an HTML template here? Need to list the OCA status, link to webrev, jcheck results, hg commit of PR,
+        // and if PR is associated with a JBS bug.
+        String statusPage = "";
+        try {
+            Files.write(statusPath.resolve("index.html"), statusPage.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        // If we get this far, then we can set PR status to success.
+
 
         return Response.ok().build();
+    }
+
+    private void setPrStatus(PrStatus status, String statusUrl, String description) {
+        ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
+        pendingStatus.put("state", status.toString().toLowerCase(Locale.US));
+        pendingStatus.put("target_url", statusUrl);
+        pendingStatus.put("description", description);
+        pendingStatus.put("context", "jfxmirror_bot");
+
+        Response statusResponse = Bot.httpClient.target(statusUrl)
+                .request()
+                .header("Authorization", "token " + githubAccessToken)
+                .accept(githubAccept)
+                .post(Entity.json(pendingStatus.toString()));
+
+        if (statusResponse.getStatus() == 404) {
+            logger.error("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
+                    "environment variable is set correctly?");
+            Bot.cleanup();
+            System.exit(1);
+        }
     }
 
     /**
@@ -277,5 +328,12 @@ public class PullRequestService {
             headersMap.put(header.getName(), header.getValue());
         }
         return headersMap;
+    }
+
+    enum PrStatus {
+        ERROR,
+        FAILURE,
+        PENDING,
+        SUCCESS
     }
 }
