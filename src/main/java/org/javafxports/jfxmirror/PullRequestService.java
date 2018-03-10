@@ -36,6 +36,8 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.jsoup.select.Selector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.ImportCommand;
@@ -50,6 +52,7 @@ public class PullRequestService {
     private static final String githubApi = "https://api.github.com";
     private static final String githubAccept = "application/vnd.github.v3+json";
     private static final String githubAccessToken = System.getenv("jfxmirror_gh_token");
+    private static final Logger logger = LoggerFactory.getLogger(PullRequestService.class);
 
     @POST
     @Path("/pr")
@@ -59,7 +62,7 @@ public class PullRequestService {
 
         MultivaluedMap<String, String> headers = requestContext.getHeaders();
         if (!headers.containsKey("X-GitHub-Event") || headers.get("X-GitHub-Event").size() != 1) {
-            System.err.println("Got POST to /pr but request did not have \"X-GitHub-Event\" header");
+            logger.error("Got POST to /pr but request did not have \"X-GitHub-Event\" header");
             return Response.status(Response.Status.BAD_REQUEST).entity(new ObjectNode(JsonNodeFactory.instance)
                     .put("error", "\"X-GitHub-Event\" header was not present or had multiple values"))
                     .type(MediaType.APPLICATION_JSON_TYPE).build();
@@ -67,16 +70,16 @@ public class PullRequestService {
 
         String gitHubEvent = headers.getFirst("X-GitHub-Event");
         if (!gitHubEvent.equalsIgnoreCase("ping") && !gitHubEvent.equalsIgnoreCase("pull_request")) {
-            System.err.println("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent);
-            System.err.println("Make sure that the only checked trigger event for the jfxmirror_bot webhook is \"Pull request\"");
+            logger.error("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent);
+            logger.error("Make sure that the only checked trigger event for the jfxmirror_bot webhook is \"Pull request\"");
             return Response.status(Response.Status.BAD_REQUEST).entity(new ObjectNode(JsonNodeFactory.instance)
                     .put("error", "\"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent))
                     .type(MediaType.APPLICATION_JSON_TYPE).build();
         }
 
         if (gitHubEvent.equalsIgnoreCase("ping")) {
-            System.out.println("Got ping request from GitHub: " + pullRequestEvent.get("zen"));
-            System.out.println("Webhook should be good to go.");
+            logger.info("Got ping request from GitHub: " + pullRequestEvent.get("zen"));
+            logger.info("Webhook should be good to go.");
             return Response.ok().entity("pong").build();
         }
 
@@ -96,7 +99,7 @@ public class PullRequestService {
                 return Response.ok().build();
         }
 
-        System.out.println("Got pull request, with action: " + action);
+        logger.info("Got pull request, with action: " + action);
         // Should the bot generate static content or should it be database driven?
         // If it's static, it might be challenging if we want to have an index page
         // that shows the historical reports.
@@ -107,8 +110,6 @@ public class PullRequestService {
         JsonNode pullRequest = pullRequestEvent.get("pull_request");
         String prNum = pullRequest.get("number").asText();
         String prShaHead = pullRequest.get("head").get("sha").asText();
-        System.out.println("Pr num: " + prNum);
-        System.out.println("Pr SHA head: " + prShaHead);
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", "pending");
         pendingStatus.put("target_url", String.format("http://jfxmirror_bot.com/%s/%s", prNum, prShaHead));
@@ -116,18 +117,16 @@ public class PullRequestService {
         pendingStatus.put("context", "jfxmirror_bot");
 
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
-        System.out.println("Repo full name: " + Arrays.toString(repoFullName));
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", githubApi, repoFullName[0], repoFullName[1], prShaHead);
-        System.out.println("Setting status of URL: " + statusUrl);
         Response statusResponse = Bot.httpClient.target(statusUrl)
                 .request()
                 .header("Authorization", "token " + githubAccessToken)
                 .accept(githubAccept)
                 .post(Entity.json(pendingStatus.toString()));
 
-        System.out.println("Status response: " + statusResponse);
+        logger.info("Status response: " + statusResponse);
         if (statusResponse.getStatus() == 404) {
-            System.err.println("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
+            logger.error("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
                     "environment variable is set correctly?");
             Bot.cleanup();
             System.exit(1);
@@ -143,7 +142,7 @@ public class PullRequestService {
         try {
             hgPatch = convertGitPatchToHgPatch(patchUrl);
         } catch (IOException | MessagingException e) {
-            System.err.println("Exception: " + e.getMessage());
+            logger.error("Exception: " + e.getMessage());
             e.printStackTrace();
             // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -155,7 +154,7 @@ public class PullRequestService {
             try {
                 Files.createDirectories(patchesDir);
             } catch (IOException e) {
-                System.err.println("Could not create patches directory");
+                logger.error("Could not create patches directory");
                 e.printStackTrace();
                 // TODO: Don't return, set the PR status to failed with an explanation
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -165,7 +164,7 @@ public class PullRequestService {
         try {
             Files.write(hgPatchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            System.err.println("Could not write mercurial patch to file");
+            logger.error("Could not write mercurial patch to file");
             e.printStackTrace();
             // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -177,11 +176,11 @@ public class PullRequestService {
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
         } catch (IOException | ExecutionException e) {
-            System.err.println("Could not import changes to upstream mercurial repository:");
+            logger.error("Could not import changes to upstream mercurial repository:");
             e.printStackTrace();
         }
 
-        System.out.println("Checking if \"" + username + "\" has signed the OCA...");
+        logger.info("Checking if \"" + username + "\" has signed the OCA...");
 
         // Check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
         // We will keep a simple file of OCA confirmations where each line maps a github username (and user id?) to
@@ -200,7 +199,7 @@ public class PullRequestService {
             for (Element signatoryLetter : signatoryLetters) {
                 Elements signatories = signatoryLetter.select("li");
                 for (Element signatory : signatories) {
-                    System.out.println("Signature: " + signatory.text());
+                    // logger.info("Signature: " + signatory.text());
                     // Split on "-" of signatory.text(), [0] will be the first/last name (or company name)
                 }
             }
@@ -223,12 +222,16 @@ public class PullRequestService {
 
         ProcessBuilder processBuilder;
         if (osName.contains("windows")) {
-            // Calling ksh to generate webrev requires having bash in the Windows %PATH%:
+            // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString()
-                    + " -N -m -o " + webRevOutputPath.toString().replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") + "\"";
+                            .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/")
+                    + " -N -m -o " + webRevOutputPath.toString()
+                    .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") + "\"";
+            logger.info("invocation: " + kshInvocation);
             processBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
         } else {
+            // Just call ksh directly.
             processBuilder = new ProcessBuilder("ksh",
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
                     "-N", "-m",
@@ -238,10 +241,10 @@ public class PullRequestService {
         processBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
             processBuilder.inheritIO();
-            System.out.println("Generating webrev for PR #" + prNum + "...");
+            logger.info("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
             Process webrev = processBuilder.start();
         } catch (IOException e) {
-            System.err.println("Error encountered generating webrev:");
+            logger.error("Error encountered generating webrev:");
             e.printStackTrace();
             // TODO: Don't return, set the PR status to failed with an explanation
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
