@@ -26,14 +26,14 @@ import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
 
 public class Bot {
 
-    // Ugly globals (but okay for a simple bot).
     protected static Client httpClient;
     protected static Repository upstreamRepo;
-
-    private static final Logger logger = LoggerFactory.getLogger(Bot.class);
     private static HttpServer httpServer;
-    private static final String upstreamRepoUrl = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
-    private static final Path upstreamRepoPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
+
+    private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";
+    private static final String UPSTREAM_REPO_URL = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
+    private static final Path UPSTREAM_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
+    private static final Logger logger = LoggerFactory.getLogger(Bot.class);
 
     public static void main(String[] args) {
         // Reset ANSI escape codes (so that even if the program is terminated by Ctrl-C the user's prompt
@@ -41,7 +41,7 @@ public class Bot {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> System.out.println(ansi().reset())));
 
         if (System.getenv("jfxmirror_gh_token") == null) {
-            logger.error("✘ \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
+            logger.error("\u2718 \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
             logger.debug("This must be set to your personal access token created for jfxmirror_bot.");
             logger.debug("You can create an access token by going to: https://github.com/settings/tokens");
             System.exit(1);
@@ -55,55 +55,56 @@ public class Bot {
         // github access token is invalid when a PR event comes in.
 
         logger.debug("test");
-        logger.info("\u2713 test");
-        logger.warn("\u26A0 test");
-        logger.error("\u2718 test");
-        if (!Files.exists(upstreamRepoPath)) {
+        // logger.info("\u2713 test");
+        // logger.warn("\u26A0 test");
+        // logger.error("\u2718 test");
+        if (!Files.exists(UPSTREAM_REPO_PATH)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
             logger.debug("Upstream mercurial repository directory not found.");
-            logger.debug("Creating " + upstreamRepoPath);
             try {
-                Files.createDirectories(upstreamRepoPath);
-                logger.info("✓ Created!");
+                Files.createDirectories(UPSTREAM_REPO_PATH);
+                logger.info("\u2713 Created: " + UPSTREAM_REPO_PATH);
             } catch (IOException e) {
-                logger.error("Could not create mercurial repository directory: " + upstreamRepoPath);
+                logger.error("\u2718 Could not create mercurial repository directory: " + UPSTREAM_REPO_PATH);
                 e.printStackTrace();
                 System.exit(1);
             }
 
-            logger.info("Cloning upstream OpenJFX mercurial repository...");
-            upstreamRepo = Repository.clone(upstreamRepoPath.toFile(), upstreamRepoUrl);
+            logger.debug("Cloning upstream OpenJFX mercurial repository...");
+            logger.debug("This may take a while as the OpenJFX repository is large.");
+            upstreamRepo = Repository.clone(UPSTREAM_REPO_PATH.toFile(), UPSTREAM_REPO_URL);
         } else {
             // Repository already exists.
-            upstreamRepo = Repository.open(upstreamRepoPath.toFile());
+            upstreamRepo = Repository.open(UPSTREAM_REPO_PATH.toFile());
         }
 
-        logger.info("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
-        logger.info("Using mercurial version: " + upstreamRepo.getHgVersion());
+        logger.debug("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
+        logger.debug("Using mercurial version: " + upstreamRepo.getHgVersion());
 
-        logger.info("Checking for \"webrev.ksh\"...");
+        logger.debug("Checking for \"webrev.ksh\"...");
         Path webrevPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev");
         if (!Files.exists(webrevPath)) {
             try {
                 Files.createDirectories(webrevPath);
             } catch (IOException e) {
-                logger.error("Could not create directory for \"webrev.ksh\":");
+                logger.error("\u2718 Could not create directory for \"webrev.ksh\".");
                 e.printStackTrace();
                 System.exit(1);
             }
         }
 
         if (!webrevPath.resolve("webrev.ksh").toFile().exists()) {
-            logger.info("Downloading \"webrev.ksh\"...");
-            try (InputStream in = URI.create("http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh").toURL().openStream()) {
+            logger.debug("Downloading \"webrev.ksh\"...");
+            try (InputStream in = URI.create(WEBREV_URL).toURL().openStream()) {
                 Files.copy(in, webrevPath.resolve("webrev.ksh"));
+                logger.info("\u2713 Downloaded \"webrev.ksh\" to: " + webrevPath.resolve("webrev.ksh"));
             } catch (IOException e) {
-                logger.error("Could not download \"webrev.ksh\":");
+                logger.error("\u2718 Could not download \"webrev.ksh\"");
                 e.printStackTrace();
                 System.exit(1);
             }
         } else {
-            logger.info("Found \"webrev.ksh\"");
+            logger.info("\u2713 Found \"webrev.ksh\".");
         }
 
         // Jersey uses java.util.logging - bridge to slf4
@@ -123,7 +124,7 @@ public class Bot {
 
         try {
             httpServer.start();
-            logger.info("HTTP server started, press Ctrl+C to shut down.");
+            logger.debug("HTTP server started, press Ctrl+C to shut down.");
             Thread.currentThread().join();
         } catch (Exception e) {
             e.printStackTrace();
@@ -134,7 +135,7 @@ public class Bot {
 
     protected static void cleanup() {
         upstreamRepo.close();
-        logger.info("Stopping HTTP server..");
+        logger.debug("Stopping HTTP server...");
         httpServer.shutdownNow();
     }
 }

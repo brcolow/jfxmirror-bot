@@ -84,7 +84,9 @@ public class PullRequestService {
     public Response serveIndex(@PathParam("path") String path) {
         return Response.ok(staticBasePath.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
     }
-
+    // logger.info("\u2713 test");
+    // logger.warn("\u26A0 test");
+    // logger.error("\u2718 test");
     @POST
     @Path("/pr")
     @Consumes(MediaType.APPLICATION_JSON)
@@ -102,15 +104,14 @@ public class PullRequestService {
         String gitHubEvent = headers.getFirst("X-GitHub-Event");
         if (!gitHubEvent.equalsIgnoreCase("ping") && !gitHubEvent.equalsIgnoreCase("pull_request")) {
             logger.error("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent);
-            logger.error("Make sure that the only checked trigger event for the jfxmirror_bot webhook is \"Pull request\"");
+            logger.debug("Make sure that the only checked trigger event for the jfxmirror_bot webhook is \"Pull request\"");
             return Response.status(Response.Status.BAD_REQUEST).entity(new ObjectNode(JsonNodeFactory.instance)
                     .put("error", "\"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent))
                     .type(MediaType.APPLICATION_JSON_TYPE).build();
         }
 
         if (gitHubEvent.equalsIgnoreCase("ping")) {
-            logger.info("Got ping request from GitHub: " + pullRequestEvent.get("zen"));
-            logger.info("Webhook should be good to go.");
+            logger.info("\u2713 Pinged by GitHub, webhook appears to be correctly configured.");
             return Response.ok().entity("pong").build();
         }
 
@@ -133,7 +134,7 @@ public class PullRequestService {
         JsonNode pullRequest = pullRequestEvent.get("pull_request");
         String prNum = pullRequest.get("number").asText();
         String prShaHead = pullRequest.get("head").get("sha").asText();
-        logger.info("Event: Pull request #" + prNum + " " + action);
+        logger.debug("Event: Pull request #" + prNum + " " + action);
 
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", githubApi, repoFullName[0], repoFullName[1], prShaHead);
@@ -148,9 +149,9 @@ public class PullRequestService {
         try {
             hgPatch = convertGitPatchToHgPatch(patchUrl);
         } catch (IOException | MessagingException e) {
-            setPrStatus(PrStatus.ERROR, statusUrl, "Could not convert git to hg patch.");
-            logger.error("Exception: " + e.getMessage());
-            e.printStackTrace();
+            setPrStatus(PrStatus.ERROR, statusUrl, "Could not convert git patch to hg patch.");
+            logger.error("\u2718 Encountered error trying to convert git patch to hg patch.");
+            logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
@@ -161,8 +162,8 @@ public class PullRequestService {
                 Files.createDirectories(patchesDir);
             } catch (IOException e) {
                 setPrStatus(PrStatus.ERROR, statusUrl, "Could not create patches directory.");
-                logger.error("Could not create patches directory");
-                e.printStackTrace();
+                logger.error("\u2718 Could not create patches directory: " + patchesDir);
+                logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
@@ -171,8 +172,8 @@ public class PullRequestService {
             Files.write(hgPatchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             setPrStatus(PrStatus.ERROR, statusUrl, "Could not write hg patch to file.");
-            logger.error("Could not write hg patch to file");
-            e.printStackTrace();
+            logger.error("\u2718 Could not write hg patch to file.");
+            logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
@@ -182,14 +183,14 @@ public class PullRequestService {
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
         } catch (IOException | ExecutionException e) {
-            setPrStatus(PrStatus.FAILURE, statusUrl, "Could not apply PR changes to upstream hg repository.");
-            logger.error("Could not import changes to upstream mercurial repository");
-            e.printStackTrace();
+            setPrStatus(PrStatus.FAILURE, statusUrl, "Could not apply PR changeset to upstream hg repository.");
+            logger.error("\u2718 Could not apply PR changeset to upstream mercurial repository.");
+            logger.debug("exception: ", e);
             // return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
         String username = pullRequest.get("user").get("login").asText();
-        logger.info("Checking if \"" + username + "\" has signed the OCA...");
+        logger.debug("Checking if \"" + username + "\" has signed the OCA...");
 
         // Check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
         // We will keep a simple file of OCA confirmations where each line maps a github username (and user id?) to
@@ -213,8 +214,9 @@ public class PullRequestService {
                 }
             }
         } catch (Selector.SelectorParseException | IOException e) {
-            logger.error("Could not extract list of OCA signatures");
-            e.printStackTrace();
+            logger.error("\u2718 Could not extract list of OCA signatures.");
+            logger.debug("Check the CSS selector as the HTML of the OCA page may have changed.");
+            logger.debug("exception: ", e);
         }
 
 
@@ -251,12 +253,12 @@ public class PullRequestService {
         processBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
             processBuilder.inheritIO();
-            logger.info("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
+            logger.debug("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
             Process webrev = processBuilder.start();
         } catch (IOException e) {
             setPrStatus(PrStatus.ERROR, statusUrl, "Could not generate webrev for PR.");
-            logger.error("Error encountered generating webrev:");
-            e.printStackTrace();
+            logger.error("\u2718 Encountered error trying to generate webrev.");
+            logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
@@ -266,17 +268,19 @@ public class PullRequestService {
             try {
                 Files.createDirectories(statusPath);
             } catch (IOException e) {
-                e.printStackTrace();
+                logger.error("\u2718 Could not create directories: " + statusPath);
+                logger.debug("exception: ", e);
             }
         }
 
-        // Should we use an HTML template here? Need to list the OCA status, link to webrev, jcheck results, hg commit of PR,
-        // and if PR is associated with a JBS bug.
+        // Should we use an HTML template here? Need to list the OCA status, link to webrev, jcheck results,
+        // hg commit of PR, and if PR is associated with a JBS bug.
         String statusPage = "";
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            e.printStackTrace();
+            logger.error("\u2718 Could not write \"index.html\" to: " + statusPath);
+            logger.debug("exception: ", e);
         }
 
         // If we get this far, then we can set PR status to success.
