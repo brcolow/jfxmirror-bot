@@ -275,6 +275,9 @@ public class PullRequestService {
             // 1.) @jfxmirror_bot Yes, that's me
             // 2.) @jfxmirror_bot I have signed the OCA, my signature line is \"signature line\"
             // 3.) @jfxmirror_bot I have now signed the OCA with GitHub username \"username\"
+            // In order to make this work we need to add a checkmark to the \"IssueCommentEvent\" webhook on GitHub settings
+            // (make sure to add that to README) and then make a jersey endpoint for issue comments.
+            // See: https://developer.github.com/v3/activity/events/types/#issuecommentevent
 
             Response commentResponse = Bot.httpClient.target(commentsUrl)
                     .request()
