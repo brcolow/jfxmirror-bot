@@ -4,15 +4,16 @@
     <contextListener class="ch.qos.logback.classic.jul.LevelChangePropagator">
         <resetJUL>true</resetJUL>
     </contextListener>
-
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+    <conversionRule conversionWord="highlightex" converterClass="org.javafxports.jfxmirror.LoggerColoring" />
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <useJansi>true</useJansi>
         <encoder>
             <charset>utf-8</charset>
-            <pattern>%highlight(%-5level) [%logger{0}] %msg %n</pattern>
+            <pattern>%highlightex(%msg) %n</pattern>
         </encoder>
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-            <level>INFO</level> <!-- set to "TRACE" for uber details -->
+            <level>DEBUG</level>
         </filter>
     </appender>
 
@@ -26,7 +27,7 @@
         </rollingPolicy>
         <encoder>
             <charset>utf-8</charset>
-            <pattern>%d{HH:mm:ss.SSS} %-5level [%logger{0}] %m%n</pattern>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%logger{0}] %msg %n</pattern>
         </encoder>
     </appender>
 
@@ -36,14 +37,18 @@
         <appender-ref ref="FILE" />
     </appender>
 
-    <logger name="org.glassfish" level="DEBUG" additivity="true"/>
-    <logger name="org.glassfish.jersey" level="DEBUG" additivity="true"/>
-    <logger name="org.javafxports.jfxmirror" level="DEBUG" additivity="true">
+    <logger name="org.glassfish" level="DEBUG">
         <appender-ref ref="FILE" />
         <appender-ref ref="ASYNC500"/>
     </logger>
-
-    <root level="INFO">
+    <logger name="org.glassfish.jersey" level="DEBUG">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="ASYNC500"/>
+    </logger>
+    <logger name="org.javafxports.jfxmirror" level="DEBUG">
+        <appender-ref ref="FILE" />
+        <appender-ref ref="ASYNC500"/>
         <appender-ref ref="STDOUT"/>
-    </root>
+    </logger>
+
 </configuration>

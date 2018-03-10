@@ -1,6 +1,5 @@
 package org.javafxports.jfxmirror;
 
-import static org.fusesource.jansi.Ansi.Color.RED;
 import static org.fusesource.jansi.Ansi.ansi;
 
 import java.io.IOException;
@@ -13,8 +12,6 @@ import java.nio.file.Paths;
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
 
-import org.fusesource.jansi.Ansi;
-import org.fusesource.jansi.AnsiConsole;
 import org.glassfish.grizzly.http.server.HttpServer;
 import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
 import org.glassfish.jersey.logging.LoggingFeature;
@@ -39,16 +36,14 @@ public class Bot {
     private static final Path upstreamRepoPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
 
     public static void main(String[] args) {
-        // AnsiConsole.systemInstall();
-
         // Reset ANSI escape codes (so that even if the program is terminated by Ctrl-C the user's prompt
         // is not tampered with.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> System.out.println(ansi().reset())));
 
         if (System.getenv("jfxmirror_gh_token") == null) {
             logger.error("✘ \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
-            logger.error("This must be set to your personal access token created for jfxmirror_bot.");
-            logger.error("You can create an access token by going to: https://github.com/settings/tokens");
+            logger.debug("This must be set to your personal access token created for jfxmirror_bot.");
+            logger.debug("You can create an access token by going to: https://github.com/settings/tokens");
             System.exit(1);
         }
 
@@ -59,12 +54,17 @@ public class Bot {
         // is more complicated than just using a personal access token). So the user will only be notified that their
         // github access token is invalid when a PR event comes in.
 
+        logger.debug("test");
+        logger.info("\u2713 test");
+        logger.warn("\u26A0 test");
+        logger.error("\u2718 test");
         if (!Files.exists(upstreamRepoPath)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
-            logger.info("Upstream mercurial repository directory not found, creating it...");
-            logger.info("Creating " + upstreamRepoPath);
+            logger.debug("Upstream mercurial repository directory not found.");
+            logger.debug("Creating " + upstreamRepoPath);
             try {
                 Files.createDirectories(upstreamRepoPath);
+                logger.info("✓ Created!");
             } catch (IOException e) {
                 logger.error("Could not create mercurial repository directory: " + upstreamRepoPath);
                 e.printStackTrace();
