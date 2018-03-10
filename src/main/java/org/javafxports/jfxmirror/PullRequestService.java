@@ -196,7 +196,7 @@ public class PullRequestService {
 
         java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
         boolean signedOca = false;
-        String ocaName = null;
+        String ocaName;
         try {
             List<String> ocaFileLines = Files.readAllLines(ocaFile, StandardCharsets.UTF_8);
             for (String line : ocaFileLines) {
@@ -250,12 +250,44 @@ public class PullRequestService {
                 logger.debug("exception: ", e);
             }
 
+            String commentsUrl = pullRequestEvent.get("_links").get("comments").get("href").asText();
+            String comment = "@" + username + " ";
             if (foundUsername) {
                 logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
-                // Post comment on PR asking them to confirm that's them.
+                comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
+                        "a signatory with your GitHub username:\n`" + ocaLine + "`\nIf that's you, add a comment on " +
+                        "this PR saying \"@jfxmirror_bot Yes, that's me\". Otherwise, if that's not you:\n\n";
             } else {
                 // Post comment on PR telling them we could not find their github username listed on OCA signature page,
                 // ask them if they have signed it.
+                comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) but could " +
+                        "not find a signature line with your GitHub username.\n\n";
+            }
+            comment += "* If you have already signed the OCA: " +
+                    "\tAdd a comment on this PR saying \"@jfxmirror_bot I have signed the OCA, my signature line is \"`{signature_line}`\"\n" +
+                    "\twhere `{signature_line}` is a line from the OCA signatures list, such as \"Michael Ennen - GlassFish Jersey - brcolow\"\n\n" +
+                    "* If you have not yet signed the OCA:\n" +
+                    "\tFollow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
+                    "doing so. Once you have signed the OCA and your name has been added to the list of signatures, " +
+                    "add a comment on this PR saying \"@jfxmirror_bot I have now signed the OCA with GitHub username \"`{github_username}`\"\".";
+
+            // TODO: Add listeners, or some type of callback, for checking for the above comment replies. Possible replies:
+            // 1.) @jfxmirror_bot Yes, that's me
+            // 2.) @jfxmirror_bot I have signed the OCA, my signature line is \"signature line\"
+            // 3.) @jfxmirror_bot I have now signed the OCA with GitHub username \"username\"
+
+            Response commentResponse = Bot.httpClient.target(commentsUrl)
+                    .request()
+                    .header("Authorization", "token " + githubAccessToken)
+                    .accept(githubAccept)
+                    .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment)));
+
+            if (commentResponse.getStatus() == 404) {
+                logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
+                        "PR with confirming their signing of the OCA.");
+                logger.debug("GitHub response: " + commentResponse.getEntity());
+                setPrStatus(PrStatus.ERROR, statusUrl, "Could not post comment to PR.");
+                return Response.status(Response.Status.BAD_REQUEST).build();
             }
         }
 
@@ -312,18 +344,19 @@ public class PullRequestService {
             }
         }
 
-        // Should we use an HTML template here? Need to list the OCA status, link to webrev, jcheck results,
-        // hg patch of PR, and if PR is associated with a JBS bug.
+        // Create status index page (that is linked to by the jfxmirror_bot PR status check.
         String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             logger.error("\u2718 Could not write \"index.html\" to: " + statusPath);
             logger.debug("exception: ", e);
+            setPrStatus(PrStatus.ERROR, statusUrl, "Could not write status page.");
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         // If we get this far, then we can set PR status to success.
-        setPrStatus(PrStatus.SUCCESS, statusUrl, "Should be accepted to upstream.");
+        setPrStatus(PrStatus.SUCCESS, statusUrl, "Ready to merge with upstream.");
 
         return Response.ok().build();
     }
