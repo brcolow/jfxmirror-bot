@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
@@ -84,9 +85,7 @@ public class PullRequestService {
     public Response serveIndex(@PathParam("path") String path) {
         return Response.ok(staticBasePath.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
     }
-    // logger.info("\u2713 test");
-    // logger.warn("\u26A0 test");
-    // logger.error("\u2718 test");
+
     @POST
     @Path("/pr")
     @Consumes(MediaType.APPLICATION_JSON)
@@ -156,7 +155,7 @@ public class PullRequestService {
         }
 
         String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
-        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "patch", prNum, prShaHead);
+        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, "patch");
         if (!patchesDir.toFile().exists()) {
             try {
                 Files.createDirectories(patchesDir);
@@ -189,36 +188,76 @@ public class PullRequestService {
             // return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
-        String username = pullRequest.get("user").get("login").asText();
-        logger.debug("Checking if \"" + username + "\" has signed the OCA...");
-
         // Check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
         // We will keep a simple file of OCA confirmations where each line maps a github username (and user id?) to
         // their listed name on the OCA page.
+        String username = pullRequest.get("user").get("login").asText();
+        logger.debug("Checking if \"" + username + "\" has signed the OCA...");
 
-        // If "username" is in our oca.txt file:
-        //   Status for OCA signature should be confirmed, list under what name
-        // Else:
-        //   See if we can find their username on the OCA list, if so, post a comment asking on the PR if that's them
-        //   and how they should reply if it is/is not.
-        //   If we can't find them on the list, tell them so and provide instructions for them to either give their OCA
-        //   name or to sign the OCA.
+        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+        boolean signedOca = false;
+        String ocaName = null;
         try {
-            Document doc = Jsoup.connect("http://www.oracle.com/technetwork/community/oca-486395.html").get();
-            Elements signatoryLetters = doc.select(".dataTable > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(1) > ul:nth-child(2n+5)");
-            for (Element signatoryLetter : signatoryLetters) {
-                Elements signatories = signatoryLetter.select("li");
-                for (Element signatory : signatories) {
-                    // logger.info("Signature: " + signatory.text());
-                    // Split on "-" of signatory.text(), [0] will be the first/last name (or company name)
+            List<String> ocaFileLines = Files.readAllLines(ocaFile, StandardCharsets.UTF_8);
+            for (String line : ocaFileLines) {
+                String[] gitHubUsernameOcaName = line.split("@@@");
+                if (gitHubUsernameOcaName.length != 2) {
+                    setPrStatus(PrStatus.ERROR, statusUrl, "OCA signature file malformed.");
+                    logger.error("\u2718 OCA signature file malformed (expecting separator \"@@@\").");
+                    logger.debug("Bad line: " + line);
+                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                }
+
+                if (gitHubUsernameOcaName[0].equals(username)) {
+                    signedOca = true;
+                    ocaName = gitHubUsernameOcaName[1];
+                    logger.info("\u2713 User who opened PR is known to have signed OCA under name: " + ocaName);
+                    break;
                 }
             }
-        } catch (Selector.SelectorParseException | IOException e) {
-            logger.error("\u2718 Could not extract list of OCA signatures.");
-            logger.debug("Check the CSS selector as the HTML of the OCA page may have changed.");
+        } catch (IOException e) {
+            setPrStatus(PrStatus.ERROR, statusUrl, "Could not read OCA signatures file.");
+            logger.error("\u2718 Could not read OCA signatures file.");
             logger.debug("exception: ", e);
+            return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
+        if (!signedOca) {
+            // We have no record that the user who opened this PR signed the OCA so let's check Oracle's OCA
+            // page to see if we can find their username.
+            boolean foundUsername = false;
+            String ocaLine = null;
+            try {
+                Document doc = Jsoup.connect("http://www.oracle.com/technetwork/community/oca-486395.html").get();
+                Elements signatoryLetters = doc.select(".dataTable > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(1) > ul:nth-child(2n+5)");
+                for (Element signatoryLetter : signatoryLetters) {
+                    Elements signatories = signatoryLetter.select("li");
+                    for (Element signatory : signatories) {
+                        // See if the signature line contains their github username.
+                        // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
+                        for (String split : signatory.text().split(" - ")) {
+                            if (split.equalsIgnoreCase(username)) {
+                                foundUsername = true;
+                                ocaLine = signatory.text();
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (Selector.SelectorParseException | IOException e) {
+                logger.error("\u2718 Could not extract list of OCA signatures.");
+                logger.debug("Check the CSS selector as the HTML of the OCA page may have changed.");
+                logger.debug("exception: ", e);
+            }
+
+            if (foundUsername) {
+                logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
+                // Post comment on PR asking them to confirm that's them.
+            } else {
+                // Post comment on PR telling them we could not find their github username listed on OCA signature page,
+                // ask them if they have signed it.
+            }
+        }
 
         // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
@@ -268,14 +307,14 @@ public class PullRequestService {
             try {
                 Files.createDirectories(statusPath);
             } catch (IOException e) {
-                logger.error("\u2718 Could not create directories: " + statusPath);
+                logger.error("\u2718 Could not create directory: " + statusPath);
                 logger.debug("exception: ", e);
             }
         }
 
         // Should we use an HTML template here? Need to list the OCA status, link to webrev, jcheck results,
-        // hg commit of PR, and if PR is associated with a JBS bug.
-        String statusPage = "";
+        // hg patch of PR, and if PR is associated with a JBS bug.
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
@@ -284,7 +323,7 @@ public class PullRequestService {
         }
 
         // If we get this far, then we can set PR status to success.
-
+        setPrStatus(PrStatus.SUCCESS, statusUrl, "Should be accepted to upstream.");
 
         return Response.ok().build();
     }

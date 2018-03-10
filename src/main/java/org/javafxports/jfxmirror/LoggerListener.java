@@ -3,10 +3,10 @@ package org.javafxports.jfxmirror;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.LoggerContextListener;
 import ch.qos.logback.core.Context;
 import ch.qos.logback.core.spi.ContextAwareBase;
 import ch.qos.logback.core.spi.LifeCycle;
-import ch.qos.logback.classic.spi.LoggerContextListener;
 
 public class LoggerListener extends ContextAwareBase implements LoggerContextListener, LifeCycle {
     private static final String OS_NAME = System.getProperty("os.name").toLowerCase();

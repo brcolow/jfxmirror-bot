@@ -54,10 +54,6 @@ public class Bot {
         // is more complicated than just using a personal access token). So the user will only be notified that their
         // github access token is invalid when a PR event comes in.
 
-        logger.debug("test");
-        // logger.info("\u2713 test");
-        // logger.warn("\u26A0 test");
-        // logger.error("\u2718 test");
         if (!Files.exists(UPSTREAM_REPO_PATH)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
             logger.debug("Upstream mercurial repository directory not found.");
@@ -66,7 +62,7 @@ public class Bot {
                 logger.info("\u2713 Created: " + UPSTREAM_REPO_PATH);
             } catch (IOException e) {
                 logger.error("\u2718 Could not create mercurial repository directory: " + UPSTREAM_REPO_PATH);
-                e.printStackTrace();
+                logger.debug("exception: ", e);
                 System.exit(1);
             }
 
@@ -88,7 +84,19 @@ public class Bot {
                 Files.createDirectories(webrevPath);
             } catch (IOException e) {
                 logger.error("\u2718 Could not create directory for \"webrev.ksh\".");
-                e.printStackTrace();
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+        }
+
+        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+        if (!ocaFile.toFile().exists()) {
+            logger.debug("Creating OCA signature file: " + ocaFile);
+            try {
+                Files.createFile(ocaFile);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not create OCA signature file: " + ocaFile);
+                logger.debug("exception: ", e);
                 System.exit(1);
             }
         }
@@ -100,7 +108,7 @@ public class Bot {
                 logger.info("\u2713 Downloaded \"webrev.ksh\" to: " + webrevPath.resolve("webrev.ksh"));
             } catch (IOException e) {
                 logger.error("\u2718 Could not download \"webrev.ksh\"");
-                e.printStackTrace();
+                logger.debug("exception: ", e);
                 System.exit(1);
             }
         } else {
