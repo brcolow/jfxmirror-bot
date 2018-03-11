@@ -451,7 +451,7 @@ public class GhEventService {
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
 
-            String commentsUrl = pullRequestEvent.get("_links").get("comments").get("href").asText();
+            String commentsUrl = pullRequest.get("_links").get("comments").get("href").asText();
             String comment = "@" + username + " ";
             if (foundUsername) {
                 try {
@@ -490,7 +490,7 @@ public class GhEventService {
                     .request()
                     .header("Authorization", "token " + GH_ACCESS_TOKEN)
                     .accept(GH_ACCEPT)
-                    .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment)));
+                    .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()));
 
             if (commentResponse.getStatus() == 404) {
                 logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
@@ -509,8 +509,11 @@ public class GhEventService {
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
         GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
         try {
-            jcheckCommand.execute();
-        } catch (ExecutionException e) {
+            String exe = jcheckCommand.execute();
+            logger.debug("jcheck: " + exe);
+            logger.debug("return code: " + jcheckCommand.getReturnCode());
+            logger.debug("error string: " + jcheckCommand.getErrorString());
+        } catch (Throwable e) {
             logger.debug("exception: ", e);
         }
 

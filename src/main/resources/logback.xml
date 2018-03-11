@@ -34,18 +34,17 @@
     <appender name="ASYNC500" class="ch.qos.logback.classic.AsyncAppender">
         <queueSize>500</queueSize>
         <discardingThreshold>0</discardingThreshold>
-        <appender-ref ref="FILE" />
     </appender>
 
-    <logger name="org.glassfish" level="DEBUG">
+    <logger name="org.glassfish" level="DEBUG" additivity="true">
         <appender-ref ref="FILE" />
         <appender-ref ref="ASYNC500"/>
     </logger>
-    <logger name="org.glassfish.jersey" level="DEBUG">
+    <logger name="org.glassfish.jersey" level="DEBUG" additivity="false">
         <appender-ref ref="FILE" />
         <appender-ref ref="ASYNC500"/>
     </logger>
-    <logger name="org.javafxports.jfxmirror" level="DEBUG">
+    <logger name="org.javafxports.jfxmirror" level="DEBUG" additivity="true">
         <appender-ref ref="FILE" />
         <appender-ref ref="ASYNC500"/>
         <appender-ref ref="STDOUT"/>
