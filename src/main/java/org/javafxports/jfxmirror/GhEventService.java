@@ -1,6 +1,10 @@
 package org.javafxports.jfxmirror;
 
+import static org.javafxports.jfxmirror.GhEventService.OcaStatus.FOUND_PENDING;
+import static org.javafxports.jfxmirror.GhEventService.OcaStatus.NOT_FOUND_PENDING;
+
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -46,14 +50,13 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 @Path("/")
-public class PullRequestService {
-
+public class GhEventService {
     private static final java.nio.file.Path staticBasePath = Paths.get(System.getProperty("user.home"), "jfxmirror");
     private static final String osName = System.getProperty("os.name").toLowerCase(Locale.US);
     private static final String githubApi = "https://api.github.com";
     private static final String githubAccept = "application/vnd.github.v3+json";
     private static final String githubAccessToken = System.getenv("jfxmirror_gh_token");
-    private static final Logger logger = LoggerFactory.getLogger(PullRequestService.class);
+    private static final Logger logger = LoggerFactory.getLogger(GhEventService.class);
 
     /**
      * Handles requests to static files from ~/jfxmirror/pr, such as ~/jfxmirror/pr/{num}/{sha}/index.html.
@@ -87,10 +90,10 @@ public class PullRequestService {
     }
 
     @POST
-    @Path("/pr")
+    @Path("/ghevent")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    public Response handlePullRequest(ObjectNode pullRequestEvent, @Context ContainerRequestContext requestContext) {
+    public Response handleGhEvent(ObjectNode event, @Context ContainerRequestContext requestContext) {
 
         MultivaluedMap<String, String> headers = requestContext.getHeaders();
         if (!headers.containsKey("X-GitHub-Event") || headers.get("X-GitHub-Event").size() != 1) {
@@ -101,21 +104,121 @@ public class PullRequestService {
         }
 
         String gitHubEvent = headers.getFirst("X-GitHub-Event");
-        if (!gitHubEvent.equalsIgnoreCase("ping") && !gitHubEvent.equalsIgnoreCase("pull_request")) {
-            logger.error("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent);
-            logger.debug("Make sure that the only checked trigger event for the jfxmirror_bot webhook is \"Pull request\"");
-            return Response.status(Response.Status.BAD_REQUEST).entity(new ObjectNode(JsonNodeFactory.instance)
-                    .put("error", "\"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\" but was: " + gitHubEvent))
-                    .type(MediaType.APPLICATION_JSON_TYPE).build();
+
+        switch (gitHubEvent.toLowerCase(Locale.US)) {
+            case "ping":
+                logger.info("\u2713 Pinged by GitHub, webhook appears to be correctly configured.");
+                return Response.ok().entity("pong").build();
+            case "issue_comment":
+                return handleComment(event);
+            case "pull_request":
+                return handlePullRequest(event);
+            default:
+                logger.debug("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\", " +
+                        "\"issue_comment\" but was: " + gitHubEvent);
+                logger.debug("Make sure that the only checked trigger events for the jfxmirror_bot webhook are \"Pull request\" and \"Issue comment\"");
+                return Response.status(Response.Status.BAD_REQUEST).entity(new ObjectNode(JsonNodeFactory.instance)
+                        .put("error", "\"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\", \"issue_comment\" but was: " + gitHubEvent))
+                        .type(MediaType.APPLICATION_JSON_TYPE).build();
+        }
+    }
+
+    /**
+     * https://developer.github.com/v3/activity/events/types/#issuecommentevent
+     */
+    private Response handleComment(ObjectNode commentEvent) {
+        String action = commentEvent.get("action").asText();
+
+        switch (action.toLowerCase(Locale.US)) {
+            case "created":
+            case "edited":
+                break;
+            default:
+                // Nothing to do.
+                return Response.ok().build();
         }
 
-        if (gitHubEvent.equalsIgnoreCase("ping")) {
-            logger.info("\u2713 Pinged by GitHub, webhook appears to be correctly configured.");
-            return Response.ok().entity("pong").build();
+        boolean commentOnPrWeCareAbout = false;
+        OcaStatus ocaStatus = null;
+        File[] prDirs = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr").toFile().listFiles(File::isDirectory);
+        if (prDirs != null) {
+            for (File prDir : prDirs) {
+                if (prDir.getName().equals(commentEvent.get("issue").get("number").asText())) {
+                    if (prDir.toPath().resolve(".oca").toFile().exists()) {
+                        try {
+                            String status = new String(Files.readAllBytes(prDir.toPath().resolve(".oca")),
+                                    StandardCharsets.UTF_8);
+                            if (status.equals(FOUND_PENDING.name().toLowerCase(Locale.US))) {
+                                ocaStatus = FOUND_PENDING;
+                                commentOnPrWeCareAbout = true;
+                                break;
+                            } else if (status.equals(NOT_FOUND_PENDING.name().toLowerCase(Locale.US))) {
+                                ocaStatus = NOT_FOUND_PENDING;
+                                commentOnPrWeCareAbout = true;
+                                break;
+                            } else if (status.equals(OcaStatus.SIGNED.name().toLowerCase(Locale.US))) {
+                                // We already know the user who opened the PR that this comment is on has signed the
+                                // OCA, so we have nothing to do.
+                                return Response.ok().build();
+                            }
+                        } catch (IOException e) {
+                            logger.error("\u2718 Could not read OCA marker file.");
+                            logger.debug("exception: ", e);
+                        }
+                    }
+                }
+            }
         }
 
-        // If we get this far then we must be dealing with a pull_request event.
-        // https://developer.github.com/v3/activity/events/types/#pullrequestevent
+
+        if (!commentOnPrWeCareAbout) {
+            return Response.ok().build();
+        }
+
+        String issueBody = commentEvent.get("issue").get("body").asText().trim();
+        if (!issueBody.startsWith("@jfxmirror_bot")) {
+            // Not a comment for us.
+            return Response.ok().build();
+        }
+
+        // 1.) @jfxmirror_bot Yes, that's me
+        // 2.) @jfxmirror_bot I have signed the OCA under the name \"name\"
+        // 3.) @jfxmirror_bot I have now signed the OCA using my GitHub username
+        String comment = issueBody.replaceFirst("@jfxmirror_bot ", "");
+
+        switch (ocaStatus) {
+            case FOUND_PENDING:
+                if (comment.startsWith("Yes, that's me")) {
+                    // Add "{github_username}@@@{github_username}" to oca.txt
+                    // Set oca marker file to signed
+                } else if (comment.startsWith("I have signed the OCA under the name")) {
+                    // Grab the name in quotes, verify it is on OCA page.
+                    // If it is, add "{github_username}@@@{oca_name}" to oca.txt and update oca marker file
+                    // If it isn't, post a comment saying we can't find that name on the OCA page
+                } else {
+                    // Can't understand the response
+                }
+                break;
+            case NOT_FOUND_PENDING:
+                if (comment.startsWith("I have signed the OCA under the name")) {
+                    // Grab the name in quotes, verify it is on OCA page.
+                    // If it is, add "{github_username}@@@{oca_name}" to oca.txt and update oca marker file
+                    // If it isn't, post a comment saying we can't find that name on the OCA page
+                } else if (comment.startsWith("I have now signed the OCA using my GitHub username")) {
+
+                } else {
+                    // Can't understand the response
+                }
+                break;
+        }
+
+        return Response.ok().build();
+    }
+
+    /**
+     * https://developer.github.com/v3/activity/events/types/#pullrequestevent
+     */
+    private Response handlePullRequest(ObjectNode pullRequestEvent) {
         String action = pullRequestEvent.get("action").asText();
 
         // "assigned", "unassigned", "review_requested", "review_request_removed", "labeled", "unlabeled", "opened",
@@ -211,7 +314,10 @@ public class PullRequestService {
                 if (gitHubUsernameOcaName[0].equals(username)) {
                     signedOca = true;
                     ocaName = gitHubUsernameOcaName[1];
-                    logger.info("\u2713 User who opened PR is known to have signed OCA under name: " + ocaName);
+                    logger.info("\u2713 User who opened PR is known to have signed OCA under the name: " + ocaName);
+                    // Write a marker file for OCA status.
+                    Files.write(Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, ".oca"),
+                            "signed".getBytes(StandardCharsets.UTF_8));
                     break;
                 }
             }
@@ -253,31 +359,39 @@ public class PullRequestService {
             String commentsUrl = pullRequestEvent.get("_links").get("comments").get("href").asText();
             String comment = "@" + username + " ";
             if (foundUsername) {
+                try {
+                    Files.write(Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, ".oca"),
+                            "found_pending".getBytes(StandardCharsets.UTF_8));
+                } catch (IOException e) {
+                    logger.error("\u2718 Could not write OCA marker file.");
+                    logger.debug("exception: ", e);
+                }
+
                 logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
                 comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
                         "a signatory with your GitHub username:\n`" + ocaLine + "`\nIf that's you, add a comment on " +
                         "this PR saying \"@jfxmirror_bot Yes, that's me\". Otherwise, if that's not you:\n\n";
             } else {
+                try {
+                    Files.write(Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, ".oca"),
+                            "not_found_pending".getBytes(StandardCharsets.UTF_8));
+                } catch (IOException e) {
+                    logger.error("\u2718 Could not write OCA marker file.");
+                    logger.debug("exception: ", e);
+                }
                 // Post comment on PR telling them we could not find their github username listed on OCA signature page,
                 // ask them if they have signed it.
                 comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) but could " +
                         "not find a signature line with your GitHub username.\n\n";
             }
             comment += "* If you have already signed the OCA: " +
-                    "\tAdd a comment on this PR saying \"@jfxmirror_bot I have signed the OCA, my signature line is \"`{signature_line}`\"\n" +
-                    "\twhere `{signature_line}` is a line from the OCA signatures list, such as \"Michael Ennen - GlassFish Jersey - brcolow\"\n\n" +
+                    "\tAdd a comment on this PR saying \"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\n" +
+                    "\twhere `{name}` is the first, name-like part of an OCA signature line. For example the signature line " +
+                    "\"Michael Ennen - GlassFish Jersey - brcolow\" has a first, name-like part of \"Michael Ennen\".\n\n" +
                     "* If you have not yet signed the OCA:\n" +
                     "\tFollow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
                     "doing so. Once you have signed the OCA and your name has been added to the list of signatures, " +
-                    "add a comment on this PR saying \"@jfxmirror_bot I have now signed the OCA with GitHub username \"`{github_username}`\"\".";
-
-            // TODO: Add listeners, or some type of callback, for checking for the above comment replies. Possible replies:
-            // 1.) @jfxmirror_bot Yes, that's me
-            // 2.) @jfxmirror_bot I have signed the OCA, my signature line is \"signature line\"
-            // 3.) @jfxmirror_bot I have now signed the OCA with GitHub username \"username\"
-            // In order to make this work we need to add a checkmark to the \"IssueCommentEvent\" webhook on GitHub settings
-            // (make sure to add that to README) and then make a jersey endpoint for issue comments.
-            // See: https://developer.github.com/v3/activity/events/types/#issuecommentevent
+                    "add a comment on this PR saying \"@jfxmirror_bot I have now signed the OCA using my GitHub username\".";
 
             Response commentResponse = Bot.httpClient.target(commentsUrl)
                     .request()
@@ -414,5 +528,11 @@ public class PullRequestService {
         FAILURE,
         PENDING,
         SUCCESS
+    }
+
+    enum OcaStatus {
+        FOUND_PENDING,
+        NOT_FOUND_PENDING,
+        SIGNED
     }
 }
