@@ -89,6 +89,10 @@ public class GhEventService {
         return Response.ok(staticBasePath.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
     }
 
+    /**
+     * Handles incoming GitHub webhook events. This endpoint is expected to be the payload URL of the
+     * webhook configured for jfxmirror_bot.
+     */
     @POST
     @Path("/ghevent")
     @Consumes(MediaType.APPLICATION_JSON)
