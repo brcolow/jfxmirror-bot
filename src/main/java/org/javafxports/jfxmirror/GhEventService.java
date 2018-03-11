@@ -1,22 +1,27 @@
 package org.javafxports.jfxmirror;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.file.StandardOpenOption.APPEND;
+import static java.util.Locale.US;
 import static org.javafxports.jfxmirror.GhEventService.OcaStatus.FOUND_PENDING;
 import static org.javafxports.jfxmirror.GhEventService.OcaStatus.NOT_FOUND_PENDING;
+import static org.javafxports.jfxmirror.GhEventService.OcaStatus.SIGNED;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.mail.Header;
 import javax.mail.MessagingException;
@@ -45,17 +50,20 @@ import org.slf4j.LoggerFactory;
 
 import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.ImportCommand;
+import com.aragost.javahg.internals.GenericCommand;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 @Path("/")
 public class GhEventService {
-    private static final java.nio.file.Path staticBasePath = Paths.get(System.getProperty("user.home"), "jfxmirror");
-    private static final String osName = System.getProperty("os.name").toLowerCase(Locale.US);
-    private static final String githubApi = "https://api.github.com";
-    private static final String githubAccept = "application/vnd.github.v3+json";
-    private static final String githubAccessToken = System.getenv("jfxmirror_gh_token");
+
+    private static final java.nio.file.Path STATIC_BASE = Paths.get(System.getProperty("user.home"), "jfxmirror");
+    private static final String OS_NAME = System.getProperty("os.name").toLowerCase(US);
+    private static final String GITHUB_API = "https://api.github.com";
+    private static final String GH_ACCEPT = "application/vnd.github.v3+json";
+    private static final String GH_ACCESS_TOKEN = System.getenv("jfxmirror_gh_token");
+    private static final String OCA_SEP = "@@@";
     private static final Logger logger = LoggerFactory.getLogger(GhEventService.class);
 
     /**
@@ -73,7 +81,7 @@ public class GhEventService {
     @GET
     @Path("/pr/{path:.*}.{ext}")
     public Response serveFile(@PathParam("path") String path, @PathParam("ext") String ext) {
-        return Response.ok(staticBasePath.resolve("pr").resolve(path + "." + ext).toFile()).build();
+        return Response.ok(STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile()).build();
     }
 
     /**
@@ -86,7 +94,7 @@ public class GhEventService {
     @GET
     @Path("/pr/{path:.*}")
     public Response serveIndex(@PathParam("path") String path) {
-        return Response.ok(staticBasePath.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
+        return Response.ok(STATIC_BASE.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
     }
 
     /**
@@ -109,7 +117,7 @@ public class GhEventService {
 
         String gitHubEvent = headers.getFirst("X-GitHub-Event");
 
-        switch (gitHubEvent.toLowerCase(Locale.US)) {
+        switch (gitHubEvent.toLowerCase(US)) {
             case "ping":
                 logger.info("\u2713 Pinged by GitHub, webhook appears to be correctly configured.");
                 return Response.ok().entity("pong").build();
@@ -133,7 +141,7 @@ public class GhEventService {
     private Response handleComment(ObjectNode commentEvent) {
         String action = commentEvent.get("action").asText();
 
-        switch (action.toLowerCase(Locale.US)) {
+        switch (action.toLowerCase(US)) {
             case "created":
             case "edited":
                 break;
@@ -148,19 +156,18 @@ public class GhEventService {
         if (prDirs != null) {
             for (File prDir : prDirs) {
                 if (prDir.getName().equals(commentEvent.get("issue").get("number").asText())) {
-                    if (prDir.toPath().resolve(".oca").toFile().exists()) {
+                    if (Files.exists(prDir.toPath().resolve(".oca"))) {
                         try {
-                            String status = new String(Files.readAllBytes(prDir.toPath().resolve(".oca")),
-                                    StandardCharsets.UTF_8);
-                            if (status.equals(FOUND_PENDING.name().toLowerCase(Locale.US))) {
+                            String status = new String(Files.readAllBytes(prDir.toPath().resolve(".oca")), UTF_8);
+                            if (status.equals(FOUND_PENDING.name().toLowerCase(US))) {
                                 ocaStatus = FOUND_PENDING;
                                 commentOnPrWeCareAbout = true;
                                 break;
-                            } else if (status.equals(NOT_FOUND_PENDING.name().toLowerCase(Locale.US))) {
+                            } else if (status.equals(NOT_FOUND_PENDING.name().toLowerCase(US))) {
                                 ocaStatus = NOT_FOUND_PENDING;
                                 commentOnPrWeCareAbout = true;
                                 break;
-                            } else if (status.equals(OcaStatus.SIGNED.name().toLowerCase(Locale.US))) {
+                            } else if (status.equals(SIGNED.name().toLowerCase(US))) {
                                 // We already know the user who opened the PR that this comment is on has signed the
                                 // OCA, so we have nothing to do.
                                 return Response.ok().build();
@@ -190,32 +197,120 @@ public class GhEventService {
         // 3.) @jfxmirror_bot I have now signed the OCA using my GitHub username
         String comment = issueBody.replaceFirst("@jfxmirror_bot ", "");
 
-        switch (ocaStatus) {
-            case FOUND_PENDING:
-                if (comment.startsWith("Yes, that's me")) {
-                    // Add "{github_username}@@@{github_username}" to oca.txt
-                    // Set oca marker file to signed
-                } else if (comment.startsWith("I have signed the OCA under the name")) {
-                    // Grab the name in quotes, verify it is on OCA page.
-                    // If it is, add "{github_username}@@@{oca_name}" to oca.txt and update oca marker file
-                    // If it isn't, post a comment saying we can't find that name on the OCA page
-                } else {
-                    // Can't understand the response
-                }
-                break;
-            case NOT_FOUND_PENDING:
-                if (comment.startsWith("I have signed the OCA under the name")) {
-                    // Grab the name in quotes, verify it is on OCA page.
-                    // If it is, add "{github_username}@@@{oca_name}" to oca.txt and update oca marker file
-                    // If it isn't, post a comment saying we can't find that name on the OCA page
-                } else if (comment.startsWith("I have now signed the OCA using my GitHub username")) {
+        String username = commentEvent.get("comment").get("user").get("login").asText();
+        String issueUrl = commentEvent.get("issue").get("url").asText();
+        String reply = "@" + username + " ";
+        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+                commentEvent.get("issue").get("number").asText(), ".oca");
 
-                } else {
-                    // Can't understand the response
+        if (ocaStatus == FOUND_PENDING && comment.startsWith("Yes, that's me")) {
+            reply += "Okay, thanks. We won't ask again.";
+            try {
+                Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
+                Files.write(ocaFile, (username + OCA_SEP + username + "\n").getBytes(UTF_8), APPEND);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not update OCA status.");
+                logger.debug("exception: ", e);
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+        } else if (comment.startsWith("I have signed the OCA under the name")) {
+            // Grab the name in double quotes.
+            Pattern pattern = Pattern.compile("\"([^\"]*)\"");
+            Matcher matcher = pattern.matcher(comment);
+            String name = null;
+            if (matcher.find()) {
+                name = stripQuotes(matcher.group(0));
+            } else {
+                // Malformed response, did not contain a name in quotes.
+                reply += "Sorry, we could not understand your response because we could not find a name in double quotes." +
+                        "Please try again by adding a comment to this PR of the form:\n\n" +
+                        "\"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\"";
+            }
+
+            try {
+                boolean foundName = false;
+                List<String> ocaSignatures = fetchOcaSignatures();
+                for (String ocaSignature : ocaSignatures) {
+                    for (String split : ocaSignature.split("-")) {
+                        if (split.trim().equalsIgnoreCase(name)) {
+                            foundName = true;
+                            break;
+                        }
+                    }
+                    if (foundName) {
+                        break;
+                    }
                 }
-                break;
+
+                if (foundName) {
+                    reply += "Okay, thanks :thumbsup:. We have updated our records that you have signed the OCA " +
+                            "under the name: \"" + name + "\".";
+                    Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
+                    Files.write(ocaFile, (username + OCA_SEP + name + "\n").getBytes(UTF_8), APPEND);
+                } else {
+                    reply += "You said that you signed the OCA under your name (\"" + name + "\"), but we weren't " +
+                            "able to find that name on the " +
+                            "[OCA signatures page](http://www.oracle.com/technetwork/community/oca-486395.html) :flushed:." +
+                            "Make sure it is correct and try again with the correct name by adding a comment to this " +
+                            "PR of the form:\n\n" +
+                            "\"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\"";
+                }
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download OCA signatures page.");
+                logger.debug("exception: ", e);
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+        } else if (comment.startsWith("I have now signed the OCA using my GitHub username")) {
+            try {
+                boolean foundUsername = false;
+                List<String> ocaSignatures = fetchOcaSignatures();
+                for (String ocaSignature : ocaSignatures) {
+                    for (String split : ocaSignature.split("-")) {
+                        if (split.trim().equalsIgnoreCase(username)) {
+                            foundUsername = true;
+                            break;
+                        }
+                    }
+                    if (foundUsername) {
+                        break;
+                    }
+                }
+
+                if (foundUsername) {
+                    reply += "Okay, thanks :thumbsup:. We have updated our records that you have signed the OCA " +
+                            "using your GitHub username.";
+                    Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
+                    Files.write(ocaFile, (username + OCA_SEP + username + "\n").getBytes(UTF_8), APPEND);
+                } else {
+                    reply += "You said that you signed the OCA under your GitHub username (\"" + username + "\"), but we weren't " +
+                            "able to find that username on the " +
+                            "[OCA signatures page](http://www.oracle.com/technetwork/community/oca-486395.html) :flushed:." +
+                            "Make sure it is correct and try again with the correct name by adding a comment to this " +
+                            "PR of the form:\n\n" +
+                            "\"@jfxmirror_bot I have now signed the OCA using my GitHub username\"";
+                }
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download OCA signatures page.");
+                logger.debug("exception: ", e);
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+        } else {
+            // Can't understand the response
+            reply += "Sorry, we could not understand your response. :confused:";
         }
 
+        Response commentResponse = Bot.httpClient.target(issueUrl)
+                .request()
+                .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                .accept(GH_ACCEPT)
+                .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", reply)));
+
+        if (commentResponse.getStatus() == 404) {
+            logger.error("\u2718 Could not post comment on PR #" + commentEvent.get("issue").get("number"));
+            logger.debug("GitHub response: " + commentResponse.getEntity());
+            return Response.status(Response.Status.BAD_REQUEST).build();
+        }
         return Response.ok().build();
     }
 
@@ -227,7 +322,7 @@ public class GhEventService {
 
         // "assigned", "unassigned", "review_requested", "review_request_removed", "labeled", "unlabeled", "opened",
         // "edited", "closed", or "reopened"
-        switch (action.toLowerCase(Locale.US)) {
+        switch (action.toLowerCase(US)) {
             case "opened":
             case "edited":
             case "reopened":
@@ -243,7 +338,7 @@ public class GhEventService {
         logger.debug("Event: Pull request #" + prNum + " " + action);
 
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
-        String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", githubApi, repoFullName[0], repoFullName[1], prShaHead);
+        String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API, repoFullName[0], repoFullName[1], prShaHead);
 
         // Set the status of the PR to pending while we do the necessary checks.
         setPrStatus(PrStatus.PENDING, statusUrl, "Checking for upstream mergeability...");
@@ -263,7 +358,7 @@ public class GhEventService {
 
         String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
         java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, "patch");
-        if (!patchesDir.toFile().exists()) {
+        if (!Files.exists(patchesDir)) {
             try {
                 Files.createDirectories(patchesDir);
             } catch (IOException e) {
@@ -275,7 +370,7 @@ public class GhEventService {
         }
         java.nio.file.Path hgPatchPath = patchesDir.resolve(patchFilename);
         try {
-            Files.write(hgPatchPath, hgPatch.getBytes(StandardCharsets.UTF_8));
+            Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
         } catch (IOException e) {
             setPrStatus(PrStatus.ERROR, statusUrl, "Could not write hg patch to file.");
             logger.error("\u2718 Could not write hg patch to file.");
@@ -302,15 +397,16 @@ public class GhEventService {
         logger.debug("Checking if \"" + username + "\" has signed the OCA...");
 
         java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, ".oca");
         boolean signedOca = false;
         String ocaName;
         try {
-            List<String> ocaFileLines = Files.readAllLines(ocaFile, StandardCharsets.UTF_8);
+            List<String> ocaFileLines = Files.readAllLines(ocaFile, UTF_8);
             for (String line : ocaFileLines) {
-                String[] gitHubUsernameOcaName = line.split("@@@");
+                String[] gitHubUsernameOcaName = line.split(OCA_SEP);
                 if (gitHubUsernameOcaName.length != 2) {
                     setPrStatus(PrStatus.ERROR, statusUrl, "OCA signature file malformed.");
-                    logger.error("\u2718 OCA signature file malformed (expecting separator \"@@@\").");
+                    logger.error("\u2718 OCA signature file malformed (expecting separator \"" + OCA_SEP + "\").");
                     logger.debug("Bad line: " + line);
                     return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
                 }
@@ -320,8 +416,7 @@ public class GhEventService {
                     ocaName = gitHubUsernameOcaName[1];
                     logger.info("\u2713 User who opened PR is known to have signed OCA under the name: " + ocaName);
                     // Write a marker file for OCA status.
-                    Files.write(Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, ".oca"),
-                            "signed".getBytes(StandardCharsets.UTF_8));
+                    Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
                     break;
                 }
             }
@@ -338,34 +433,29 @@ public class GhEventService {
             boolean foundUsername = false;
             String ocaLine = null;
             try {
-                Document doc = Jsoup.connect("http://www.oracle.com/technetwork/community/oca-486395.html").get();
-                Elements signatoryLetters = doc.select(".dataTable > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(1) > ul:nth-child(2n+5)");
-                for (Element signatoryLetter : signatoryLetters) {
-                    Elements signatories = signatoryLetter.select("li");
-                    for (Element signatory : signatories) {
-                        // See if the signature line contains their github username.
-                        // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
-                        for (String split : signatory.text().split(" - ")) {
-                            if (split.equalsIgnoreCase(username)) {
-                                foundUsername = true;
-                                ocaLine = signatory.text();
-                                break;
-                            }
+                List<String> ocaSignatures = fetchOcaSignatures();
+                for (String ocaSignature : ocaSignatures) {
+                    // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
+                    for (String split : ocaSignature.split(" - ")) {
+                        if (split.equalsIgnoreCase(username)) {
+                            foundUsername = true;
+                            ocaLine = ocaSignature;
+                            break;
                         }
                     }
                 }
-            } catch (Selector.SelectorParseException | IOException e) {
-                logger.error("\u2718 Could not extract list of OCA signatures.");
-                logger.debug("Check the CSS selector as the HTML of the OCA page may have changed.");
+            } catch (IOException e) {
+                setPrStatus(PrStatus.ERROR, statusUrl, "Could not download OCA signatures page.");
+                logger.error("\u2718 Could not download OCA signatures page.");
                 logger.debug("exception: ", e);
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
 
             String commentsUrl = pullRequestEvent.get("_links").get("comments").get("href").asText();
             String comment = "@" + username + " ";
             if (foundUsername) {
                 try {
-                    Files.write(Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, ".oca"),
-                            "found_pending".getBytes(StandardCharsets.UTF_8));
+                    Files.write(ocaMarkerFile, FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
                 } catch (IOException e) {
                     logger.error("\u2718 Could not write OCA marker file.");
                     logger.debug("exception: ", e);
@@ -377,8 +467,7 @@ public class GhEventService {
                         "this PR saying \"@jfxmirror_bot Yes, that's me\". Otherwise, if that's not you:\n\n";
             } else {
                 try {
-                    Files.write(Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, ".oca"),
-                            "not_found_pending".getBytes(StandardCharsets.UTF_8));
+                    Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
                 } catch (IOException e) {
                     logger.error("\u2718 Could not write OCA marker file.");
                     logger.debug("exception: ", e);
@@ -399,8 +488,8 @@ public class GhEventService {
 
             Response commentResponse = Bot.httpClient.target(commentsUrl)
                     .request()
-                    .header("Authorization", "token " + githubAccessToken)
-                    .accept(githubAccept)
+                    .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                    .accept(GH_ACCEPT)
                     .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment)));
 
             if (commentResponse.getStatus() == 404) {
@@ -417,15 +506,19 @@ public class GhEventService {
         // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
-        // This looks to be a mercurial extension. javahg should support those, see for example:
-        // ExtensionTest.java: https://bitbucket.org/aragost/javahg/src/tip/src/test/java/com/aragost/javahg/ExtensionTest.java
-        // MercurialExtension.java: https://bitbucket.org/aragost/javahg/src/tip/src/main/java/com/aragost/javahg/MercurialExtension.java
+        logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
+        GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
+        try {
+            jcheckCommand.execute();
+        } catch (ExecutionException e) {
+            logger.debug("exception: ", e);
+        }
 
         // Generate a webrev
         java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
 
         ProcessBuilder processBuilder;
-        if (osName.contains("windows")) {
+        if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString()
@@ -456,7 +549,7 @@ public class GhEventService {
 
         // Make status page at "prNum/prShaHead" from the above data, set status to success/fail depending on the above
         java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead);
-        if (!statusPath.toFile().exists()) {
+        if (!Files.exists(statusPath)) {
             try {
                 Files.createDirectories(statusPath);
             } catch (IOException e) {
@@ -466,9 +559,9 @@ public class GhEventService {
         }
 
         // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead);
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, signedOca);
         try {
-            Files.write(statusPath.resolve("index.html"), statusPage.getBytes(StandardCharsets.UTF_8));
+            Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
         } catch (IOException e) {
             logger.error("\u2718 Could not write \"index.html\" to: " + statusPath);
             logger.debug("exception: ", e);
@@ -482,17 +575,37 @@ public class GhEventService {
         return Response.ok().build();
     }
 
+    private List<String> fetchOcaSignatures() throws IOException {
+        List<String> signatures = new ArrayList<>();
+        try {
+            Document doc = Jsoup.connect("http://www.oracle.com/technetwork/community/oca-486395.html").get();
+            Elements signatoryLetters = doc.select(".dataTable > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(1) > ul:nth-child(2n+5)");
+            for (Element signatoryLetter : signatoryLetters) {
+                Elements signatories = signatoryLetter.select("li");
+                for (Element signatory : signatories) {
+                    signatures.add(signatory.text());
+                }
+            }
+        } catch (Selector.SelectorParseException e) {
+            logger.error("\u2718 Could not extract list of OCA signatures.");
+            logger.debug("Check the CSS selector as the HTML of the OCA page may have changed.");
+            logger.debug("exception: ", e);
+        }
+
+        return signatures;
+    }
+
     private void setPrStatus(PrStatus status, String statusUrl, String description) {
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
-        pendingStatus.put("state", status.toString().toLowerCase(Locale.US));
+        pendingStatus.put("state", status.toString().toLowerCase(US));
         pendingStatus.put("target_url", statusUrl);
         pendingStatus.put("description", description);
         pendingStatus.put("context", "jfxmirror_bot");
 
         Response statusResponse = Bot.httpClient.target(statusUrl)
                 .request()
-                .header("Authorization", "token " + githubAccessToken)
-                .accept(githubAccept)
+                .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                .accept(GH_ACCEPT)
                 .post(Entity.json(pendingStatus.toString()));
 
         if (statusResponse.getStatus() == 404) {
@@ -509,7 +622,7 @@ public class GhEventService {
     private static String convertGitPatchToHgPatch(String patchUrl) throws IOException, MessagingException {
         String gitPatch = new Scanner(new URL(patchUrl).openStream(), "UTF-8").useDelimiter("\\A").next();
         Session session = Session.getDefaultInstance(new Properties());
-        MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(StandardCharsets.UTF_8)));
+        MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(UTF_8)));
         Map<String, String> headers = enumToMap(emailMessage.getAllHeaders());
         return "# HG changeset patch\n" +
                 "# User " + headers.get("From") + "\n" +
@@ -525,6 +638,14 @@ public class GhEventService {
             headersMap.put(header.getName(), header.getValue());
         }
         return headersMap;
+    }
+
+    private static String stripQuotes(String string) {
+        if (string.length() >= 2 && string.charAt(0) == '"' && string.charAt(string.length() - 1) == '"') {
+            return string.substring(1, string.length() - 1);
+        }
+
+        return string;
     }
 
     enum PrStatus {

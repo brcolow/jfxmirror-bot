@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.bridge.SLF4JBridgeHandler;
 
 import com.aragost.javahg.Repository;
+import com.aragost.javahg.RepositoryConfiguration;
 import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
 
 public class Bot {
@@ -30,6 +31,7 @@ public class Bot {
     protected static Repository upstreamRepo;
     private static HttpServer httpServer;
 
+    private static final String JCHECK_URL = "http://hg.openjdk.java.net/code-tools/jcheck/dist/raw-file/tip/jcheck.py";
     private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";
     private static final String UPSTREAM_REPO_URL = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
     private static final Path UPSTREAM_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
@@ -54,6 +56,8 @@ public class Bot {
         // is more complicated than just using a personal access token). So the user will only be notified that their
         // github access token is invalid when a PR event comes in.
 
+        RepositoryConfiguration repoConf = new RepositoryConfiguration();
+        repoConf.addExtension(JCheckExtension.class);
         if (!Files.exists(UPSTREAM_REPO_PATH)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
             logger.debug("Upstream mercurial repository directory not found.");
@@ -68,14 +72,30 @@ public class Bot {
 
             logger.debug("Cloning upstream OpenJFX mercurial repository...");
             logger.debug("This may take a while as the OpenJFX repository is large.");
-            upstreamRepo = Repository.clone(UPSTREAM_REPO_PATH.toFile(), UPSTREAM_REPO_URL);
+            upstreamRepo = Repository.clone(repoConf, UPSTREAM_REPO_PATH.toFile(), UPSTREAM_REPO_URL);
         } else {
             // Repository already exists.
-            upstreamRepo = Repository.open(UPSTREAM_REPO_PATH.toFile());
+            upstreamRepo = Repository.open(repoConf, UPSTREAM_REPO_PATH.toFile());
         }
 
         logger.debug("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
         logger.debug("Using mercurial version: " + upstreamRepo.getHgVersion());
+
+        logger.debug("Checking for \"jcheck.py\"...");
+        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
+        if (!Files.exists(jcheckPath)) {
+            logger.debug("Downloading \"webrev.ksh\"...");
+            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
+                Files.copy(in, jcheckPath);
+                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download \"jcheck.py\"");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+        } else {
+            logger.info("\u2713 Found \"jcheck.py\".");
+        }
 
         logger.debug("Checking for \"webrev.ksh\"...");
         Path webrevPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev");
@@ -89,19 +109,7 @@ public class Bot {
             }
         }
 
-        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
-        if (!ocaFile.toFile().exists()) {
-            logger.debug("Creating OCA signature file: " + ocaFile);
-            try {
-                Files.createFile(ocaFile);
-            } catch (IOException e) {
-                logger.error("\u2718 Could not create OCA signature file: " + ocaFile);
-                logger.debug("exception: ", e);
-                System.exit(1);
-            }
-        }
-
-        if (!webrevPath.resolve("webrev.ksh").toFile().exists()) {
+        if (!Files.exists(webrevPath.resolve("webrev.ksh"))) {
             logger.debug("Downloading \"webrev.ksh\"...");
             try (InputStream in = URI.create(WEBREV_URL).toURL().openStream()) {
                 Files.copy(in, webrevPath.resolve("webrev.ksh"));
@@ -113,6 +121,18 @@ public class Bot {
             }
         } else {
             logger.info("\u2713 Found \"webrev.ksh\".");
+        }
+
+        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+        if (!Files.exists(ocaFile)) {
+            logger.debug("Creating OCA signature file: " + ocaFile);
+            try {
+                Files.createFile(ocaFile);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not create OCA signature file: " + ocaFile);
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
         }
 
         // Jersey uses java.util.logging - bridge to slf4
