@@ -1,6 +1,7 @@
 # jfxmirror-bot
 
-Helps contributors to the OpenJFX GitHub get their changes accepted into OpenJFX upstream.
+Helps contributors to the [OpenJFX GitHub repository](https://github.com/javafxports/openjdk-jfx) get their pull
+requests accepted into OpenJFX upstream.
 
 ## Setup
 
