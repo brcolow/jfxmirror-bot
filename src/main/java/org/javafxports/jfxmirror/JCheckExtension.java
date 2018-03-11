@@ -12,6 +12,6 @@ public class JCheckExtension extends MercurialExtension {
 
     @Override
     public String getPath() {
-        return Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py").normalize().toString();
+        return Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py").toString();
     }
 }

@@ -3,14 +3,15 @@ package org.javafxports.jfxmirror;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.StandardOpenOption.APPEND;
 import static java.util.Locale.US;
-import static org.javafxports.jfxmirror.GhEventService.OcaStatus.FOUND_PENDING;
-import static org.javafxports.jfxmirror.GhEventService.OcaStatus.NOT_FOUND_PENDING;
-import static org.javafxports.jfxmirror.GhEventService.OcaStatus.SIGNED;
+import static org.javafxports.jfxmirror.OcaStatus.FOUND_PENDING;
+import static org.javafxports.jfxmirror.OcaStatus.NOT_FOUND_PENDING;
+import static org.javafxports.jfxmirror.OcaStatus.SIGNED;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -357,7 +358,7 @@ public class GhEventService {
         }
 
         String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
-        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead, "patch");
+        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "patch");
         if (!Files.exists(patchesDir)) {
             try {
                 Files.createDirectories(patchesDir);
@@ -390,116 +391,129 @@ public class GhEventService {
             // return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
-        // Check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
-        // We will keep a simple file of OCA confirmations where each line maps a github username (and user id?) to
-        // their listed name on the OCA page.
+        // If necessary, check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
         String username = pullRequest.get("user").get("login").asText();
-        logger.debug("Checking if \"" + username + "\" has signed the OCA...");
-
-        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
-        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, ".oca");
-        boolean signedOca = false;
-        String ocaName;
-        try {
-            List<String> ocaFileLines = Files.readAllLines(ocaFile, UTF_8);
-            for (String line : ocaFileLines) {
-                String[] gitHubUsernameOcaName = line.split(OCA_SEP);
-                if (gitHubUsernameOcaName.length != 2) {
-                    setPrStatus(PrStatus.ERROR, statusUrl, "OCA signature file malformed.");
-                    logger.error("\u2718 OCA signature file malformed (expecting separator \"" + OCA_SEP + "\").");
-                    logger.debug("Bad line: " + line);
-                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-                }
-
-                if (gitHubUsernameOcaName[0].equals(username)) {
-                    signedOca = true;
-                    ocaName = gitHubUsernameOcaName[1];
-                    logger.info("\u2713 User who opened PR is known to have signed OCA under the name: " + ocaName);
-                    // Write a marker file for OCA status.
-                    Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
-                    break;
-                }
-            }
-        } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, statusUrl, "Could not read OCA signatures file.");
-            logger.error("\u2718 Could not read OCA signatures file.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.BAD_REQUEST).build();
-        }
-
-        if (!signedOca) {
-            // We have no record that the user who opened this PR signed the OCA so let's check Oracle's OCA
-            // page to see if we can find their username.
-            boolean foundUsername = false;
-            String ocaLine = null;
+        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, ".oca");
+        OcaStatus ocaStatus = NOT_FOUND_PENDING;
+        if (Files.exists(ocaMarkerFile)) {
             try {
-                List<String> ocaSignatures = fetchOcaSignatures();
-                for (String ocaSignature : ocaSignatures) {
-                    // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
-                    for (String split : ocaSignature.split(" - ")) {
-                        if (split.equalsIgnoreCase(username)) {
-                            foundUsername = true;
-                            ocaLine = ocaSignature;
-                            break;
-                        }
-                    }
-                }
+                String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
+                ocaStatus = OcaStatus.valueOf(ocaMarkerContents);
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, statusUrl, "Could not download OCA signatures page.");
-                logger.error("\u2718 Could not download OCA signatures page.");
+                setPrStatus(PrStatus.ERROR, statusUrl, "Could not read OCA marker file.");
+                logger.error("\u2718 Could not read OCA marker file: " + ocaMarkerFile);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
+            logger.debug("Already checked if \"" + username + "\" has signed the OCA.");
+        } else {
+            logger.debug("Checking if \"" + username + "\" has signed the OCA...");
+            java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+            String ocaName;
+            try {
+                List<String> ocaFileLines = Files.readAllLines(ocaFile, UTF_8);
+                for (String line : ocaFileLines) {
+                    String[] gitHubUsernameOcaName = line.split(OCA_SEP);
+                    if (gitHubUsernameOcaName.length != 2) {
+                        setPrStatus(PrStatus.ERROR, statusUrl, "OCA signature file malformed.");
+                        logger.error("\u2718 OCA signature file malformed (expecting separator \"" + OCA_SEP + "\").");
+                        logger.debug("Bad line: " + line);
+                        return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                    }
 
-            String commentsUrl = pullRequest.get("_links").get("comments").get("href").asText();
-            String comment = "@" + username + " ";
-            if (foundUsername) {
-                try {
-                    Files.write(ocaMarkerFile, FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
-                } catch (IOException e) {
-                    logger.error("\u2718 Could not write OCA marker file.");
-                    logger.debug("exception: ", e);
+                    if (gitHubUsernameOcaName[0].equals(username)) {
+                        ocaName = gitHubUsernameOcaName[1];
+                        logger.info("\u2713 User who opened PR is known to have signed OCA under the name: " + ocaName);
+                        // Write a marker file for OCA status.
+                        Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
+                        ocaStatus = SIGNED;
+                        break;
+                    }
                 }
-
-                logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
-                comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
-                        "a signatory with your GitHub username:\n`" + ocaLine + "`\nIf that's you, add a comment on " +
-                        "this PR saying \"@jfxmirror_bot Yes, that's me\". Otherwise, if that's not you:\n\n";
-            } else {
-                try {
-                    Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
-                } catch (IOException e) {
-                    logger.error("\u2718 Could not write OCA marker file.");
-                    logger.debug("exception: ", e);
-                }
-                // Post comment on PR telling them we could not find their github username listed on OCA signature page,
-                // ask them if they have signed it.
-                comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) but could " +
-                        "not find a signature line with your GitHub username.\n\n";
-            }
-            comment += "* If you have already signed the OCA: " +
-                    "\tAdd a comment on this PR saying \"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\n" +
-                    "\twhere `{name}` is the first, name-like part of an OCA signature line. For example the signature line " +
-                    "\"Michael Ennen - GlassFish Jersey - brcolow\" has a first, name-like part of \"Michael Ennen\".\n\n" +
-                    "* If you have not yet signed the OCA:\n" +
-                    "\tFollow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
-                    "doing so. Once you have signed the OCA and your name has been added to the list of signatures, " +
-                    "add a comment on this PR saying \"@jfxmirror_bot I have now signed the OCA using my GitHub username\".";
-
-            Response commentResponse = Bot.httpClient.target(commentsUrl)
-                    .request()
-                    .header("Authorization", "token " + GH_ACCESS_TOKEN)
-                    .accept(GH_ACCEPT)
-                    .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()));
-
-            if (commentResponse.getStatus() == 404) {
-                logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
-                        "PR with confirming their signing of the OCA.");
-                logger.debug("GitHub response: " + commentResponse.getEntity());
-                setPrStatus(PrStatus.ERROR, statusUrl, "Could not post comment to PR.");
+            } catch (IOException e) {
+                setPrStatus(PrStatus.ERROR, statusUrl, "Could not read OCA signatures file.");
+                logger.error("\u2718 Could not read OCA signatures file.");
+                logger.debug("exception: ", e);
                 return Response.status(Response.Status.BAD_REQUEST).build();
             }
+
+            if (ocaStatus != SIGNED) {
+                // We have no record that the user who opened this PR signed the OCA so let's check Oracle's OCA
+                // page to see if we can find their username.
+                boolean foundUsername = false;
+                String ocaLine = null;
+                try {
+                    List<String> ocaSignatures = fetchOcaSignatures();
+                    for (String ocaSignature : ocaSignatures) {
+                        // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
+                        for (String split : ocaSignature.split(" - ")) {
+                            if (split.equalsIgnoreCase(username)) {
+                                foundUsername = true;
+                                ocaLine = ocaSignature;
+                                break;
+                            }
+                        }
+                    }
+                } catch (IOException e) {
+                    setPrStatus(PrStatus.ERROR, statusUrl, "Could not download OCA signatures page.");
+                    logger.error("\u2718 Could not download OCA signatures page.");
+                    logger.debug("exception: ", e);
+                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                }
+
+                String commentsUrl = pullRequest.get("_links").get("comments").get("href").asText();
+                String comment = "@" + username + " ";
+                if (foundUsername) {
+                    try {
+                        Files.write(ocaMarkerFile, FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
+                        ocaStatus = FOUND_PENDING;
+                    } catch (IOException e) {
+                        logger.error("\u2718 Could not write OCA marker file.");
+                        logger.debug("exception: ", e);
+                    }
+
+                    logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
+                    comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
+                            "a signatory with your GitHub username:\n`" + ocaLine + "`\nIf that's you, add a comment on " +
+                            "this PR saying \"@jfxmirror_bot Yes, that's me\". Otherwise, if that's not you:\n\n";
+                } else {
+                    try {
+                        Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
+                        ocaStatus = NOT_FOUND_PENDING;
+                    } catch (IOException e) {
+                        logger.error("\u2718 Could not write OCA marker file.");
+                        logger.debug("exception: ", e);
+                    }
+                    // Post comment on PR telling them we could not find their github username listed on OCA signature page,
+                    // ask them if they have signed it.
+                    comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) but could " +
+                            "not find a signature line with your GitHub username.\n\n";
+                }
+                comment += "* If you have already signed the OCA: " +
+                        "\tAdd a comment on this PR saying:\n\n\"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\n" +
+                        "\twhere `{name}` is the first, name-like part of an OCA signature line. For example the signature line " +
+                        "\"Michael Ennen - GlassFish Jersey - brcolow\" has a first, name-like part of \"Michael Ennen\".\n\n" +
+                        "* If you have not yet signed the OCA:\n" +
+                        "\tFollow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
+                        "doing so. Once you have signed the OCA and your name has been added to the list of signatures, " +
+                        "add a comment on this PR saying:\n\n\"@jfxmirror_bot I have now signed the OCA using my GitHub username\".";
+
+                Response commentResponse = Bot.httpClient.target(commentsUrl)
+                        .request()
+                        .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                        .accept(GH_ACCEPT)
+                        .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()));
+
+                if (commentResponse.getStatus() == 404) {
+                    logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
+                            "PR with confirming their signing of the OCA.");
+                    logger.debug("GitHub response: " + commentResponse.getEntity());
+                    setPrStatus(PrStatus.ERROR, statusUrl, "Could not post comment to PR.");
+                    return Response.status(Response.Status.BAD_REQUEST).build();
+                }
+            }
         }
+
 
         // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
@@ -551,7 +565,7 @@ public class GhEventService {
         }
 
         // Make status page at "prNum/prShaHead" from the above data, set status to success/fail depending on the above
-        java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", prNum, prShaHead);
+        java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
         if (!Files.exists(statusPath)) {
             try {
                 Files.createDirectories(statusPath);
@@ -562,7 +576,7 @@ public class GhEventService {
         }
 
         // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, signedOca);
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
         } catch (IOException e) {
@@ -658,9 +672,4 @@ public class GhEventService {
         SUCCESS
     }
 
-    enum OcaStatus {
-        FOUND_PENDING,
-        NOT_FOUND_PENDING,
-        SIGNED
-    }
 }

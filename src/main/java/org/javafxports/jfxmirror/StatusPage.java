@@ -1,7 +1,7 @@
 package org.javafxports.jfxmirror;
 
 public class StatusPage {
-    public static String getStatusPageHtml(String prNum, String prShaHead, boolean signedOca) {
+    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus) {
         return " <!DOCTYPE html>\n" +
                 "<html>\n" +
                 "  <head>\n" +
@@ -9,11 +9,11 @@ public class StatusPage {
                 "    <title>Status: PR #" + prNum + " (" + prShaHead + ")</title>\n" +
                 "  </head>\n" +
                 "  <body>\n" +
-                "      OCA: " + (signedOca ? "Signed" : "Not signed") + "\n" +
-                "      JBS Bug:" +
-                "      Mercurial Patch: <a href=\"./patch/" + prNum + ".patch\">View</a>\n" +
-                "      Webrev: <a href=\"./webrev\">View</a> | <a href=\"./webrev.zip\">Download</a>\n" +
-                "      jcheck:" +
+                "      <p>OCA: " + ocaStatus.getDescription() + "</p>" +
+                "      <p>JBS Bug: </p>" +
+                "      <p>Mercurial Patch: <a href=\"./patch/" + prNum + ".patch\">View</a></p>" +
+                "      <p>Webrev: <a href=\"./webrev\">View</a> | <a href=\"./webrev.zip\">Download</a></p>" +
+                "      <p>jcheck: </p>" +
                 "  </body>\n" +
                 "</html>\n";
     }

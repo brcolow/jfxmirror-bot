@@ -31,7 +31,8 @@ public class Bot {
     protected static Repository upstreamRepo;
     private static HttpServer httpServer;
 
-    private static final String JCHECK_URL = "http://hg.openjdk.java.net/code-tools/jcheck/dist/raw-file/tip/jcheck.py";
+    private static final String JCHECK_URL = "http://cr.openjdk.java.net/~kcr/jcheck/bin/jcheck.py";
+    private static final String JCHECK_CONF_URL = "http://cr.openjdk.java.net/%7Ekcr/jcheck/conf";
     private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";
     private static final String UPSTREAM_REPO_URL = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
     private static final Path UPSTREAM_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
@@ -55,6 +56,22 @@ public class Bot {
         // for checking the validity of the githubAccessToken, but that requires registering an OAuth App (and that
         // is more complicated than just using a personal access token). So the user will only be notified that their
         // github access token is invalid when a PR event comes in.
+
+        logger.debug("Checking for \"jcheck.py\"...");
+        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
+        if (!Files.exists(jcheckPath)) {
+            logger.debug("Downloading \"jcheck.py\"...");
+            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
+                Files.copy(in, jcheckPath);
+                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download \"jcheck.py\".");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+        } else {
+            logger.info("\u2713 Found \"jcheck.py\".");
+        }
 
         RepositoryConfiguration repoConf = new RepositoryConfiguration();
         repoConf.addExtension(JCheckExtension.class);
@@ -81,20 +98,30 @@ public class Bot {
         logger.debug("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
         logger.debug("Using mercurial version: " + upstreamRepo.getHgVersion());
 
-        logger.debug("Checking for \"jcheck.py\"...");
-        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
-        if (!Files.exists(jcheckPath)) {
-            logger.debug("Downloading \"webrev.ksh\"...");
-            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
-                Files.copy(in, jcheckPath);
-                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
+        Path jcheckDir = Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck");
+        if (!Files.isDirectory(Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck"))) {
+            try {
+                Files.createDirectory(jcheckDir);
             } catch (IOException e) {
-                logger.error("\u2718 Could not download \"jcheck.py\"");
+                logger.error("\u2718 Could not create \".jcheck\" directory at root of upstream hg repository.");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+        }
+
+        Path jcheckConfPath = Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck").resolve("conf");
+        if (!Files.exists(jcheckConfPath)) {
+            logger.debug("Downloading jcheck config file...");
+            try (InputStream in = URI.create(JCHECK_CONF_URL).toURL().openStream()) {
+                Files.copy(in, jcheckConfPath);
+                logger.info("\u2713 Downloaded jcheck config file to: " + jcheckConfPath);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download jcheck config file.");
                 logger.debug("exception: ", e);
                 System.exit(1);
             }
         } else {
-            logger.info("\u2713 Found \"jcheck.py\".");
+            logger.info("\u2713 Found jcheck config file: " + jcheckConfPath);
         }
 
         logger.debug("Checking for \"webrev.ksh\"...");
@@ -115,7 +142,7 @@ public class Bot {
                 Files.copy(in, webrevPath.resolve("webrev.ksh"));
                 logger.info("\u2713 Downloaded \"webrev.ksh\" to: " + webrevPath.resolve("webrev.ksh"));
             } catch (IOException e) {
-                logger.error("\u2718 Could not download \"webrev.ksh\"");
+                logger.error("\u2718 Could not download \"webrev.ksh\".");
                 logger.debug("exception: ", e);
                 System.exit(1);
             }
