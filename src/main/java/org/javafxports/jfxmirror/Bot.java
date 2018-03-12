@@ -89,7 +89,7 @@ public class Bot {
             }
 
             logger.debug("Cloning upstream OpenJFX mercurial repository...");
-            logger.debug("This may take a while as the OpenJFX repository is large.");
+            logger.debug("This may take a while (like 20 or more minutes) as the OpenJFX repository is large.");
             upstreamRepo = Repository.clone(repoConf, UPSTREAM_REPO_PATH.toFile(), UPSTREAM_REPO_URL);
         } else {
             // Repository already exists.

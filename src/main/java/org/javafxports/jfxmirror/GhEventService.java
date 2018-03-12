@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Scanner;
@@ -49,9 +50,13 @@ import org.jsoup.select.Selector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.aragost.javahg.Changeset;
 import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.IdentifyCommand;
 import com.aragost.javahg.commands.ImportCommand;
+import com.aragost.javahg.commands.UpdateCommand;
+import com.aragost.javahg.commands.UpdateResult;
+import com.aragost.javahg.ext.mq.StripCommand;
 import com.aragost.javahg.internals.GenericCommand;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -363,19 +368,21 @@ public class GhEventService {
         }
 
         String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
-        java.nio.file.Path patchesDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "patch");
-        if (!Files.exists(patchesDir)) {
+        java.nio.file.Path patchDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "patch");
+        if (!Files.exists(patchDir)) {
             try {
-                Files.createDirectories(patchesDir);
+                logger.debug("Creating directory: " + patchDir);
+                Files.createDirectories(patchDir);
             } catch (IOException e) {
                 setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not create patches directory.");
-                logger.error("\u2718 Could not create patches directory: " + patchesDir);
+                logger.error("\u2718 Could not create patches directory: " + patchDir);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
-        java.nio.file.Path hgPatchPath = patchesDir.resolve(patchFilename);
+        java.nio.file.Path hgPatchPath = patchDir.resolve(patchFilename);
         try {
+            logger.debug("Writing hg patch: " + hgPatchPath);
             Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
         } catch (IOException e) {
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.");
@@ -385,15 +392,28 @@ public class GhEventService {
         }
 
         // Apply the hg patch to the upstream hg repo
+        logger.debug("Fetching tip revision before import...");
+        String tipBeforeImport = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-1").execute();
+        logger.debug("Tip revision before import: " + tipBeforeImport);
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
+            logger.debug("Updating upstream hg repository...");
+            UpdateResult updateResult = UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Could not apply PR changeset to upstream hg repository.");
             logger.error("\u2718 Could not apply PR changeset to upstream mercurial repository.");
             logger.debug("exception: ", e);
+            // FIXME: Uncomment this after testing
             // return Response.status(Response.Status.BAD_REQUEST).build();
+        }
+        String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
+        logger.debug("Previous commit (after import): " + previousCommit);
+        if (!previousCommit.equals(tipBeforeImport)) {
+            logger.error("\u2718 The tip before importing is not equal to the previous commit!");
+            // setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Upstream hg repository error.");
+            // Response.status(Response.Status.BAD_REQUEST).build();
         }
 
         // If necessary, check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
@@ -403,7 +423,7 @@ public class GhEventService {
         if (Files.exists(ocaMarkerFile)) {
             try {
                 String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
-                ocaStatus = OcaStatus.valueOf(ocaMarkerContents);
+                ocaStatus = OcaStatus.valueOf(ocaMarkerContents.toUpperCase(Locale.US));
             } catch (IOException e) {
                 setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA marker file.");
                 logger.error("\u2718 Could not read OCA marker file: " + ocaMarkerFile);
@@ -520,7 +540,6 @@ public class GhEventService {
             }
         }
 
-
         // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
         // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
@@ -528,19 +547,28 @@ public class GhEventService {
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
         GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
+        String jcheckResults = null;
         try {
-            String exe = jcheckCommand.execute("-v", "--strict");
-            logger.debug("jcheck: " + exe);
-            logger.debug("return code: " + jcheckCommand.getReturnCode());
-            logger.debug("error string: " + jcheckCommand.getErrorString());
-        } catch (Throwable e) {
-            logger.debug("exception: ", e);
+            jcheckResults = jcheckCommand.execute();
+            if (jcheckCommand.getReturnCode() == 0) {
+                jcheckResults = "Success - no warnings from jcheck.";
+            }
+        } catch (ExecutionException e) {
+            if (jcheckCommand.getReturnCode() == 1) {
+                // Expected error, this means jcheck failed.
+                logger.debug("jcheck error string: " + jcheckCommand.getErrorString());
+                jcheckResults = jcheckCommand.getErrorString();
+            } else {
+                logger.error("\u2718 Unexpected exit code from jcheck: " + jcheckCommand.getReturnCode());
+                logger.debug("exception: ", e);
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Unexpected exit code from jcheck.");
+                return Response.status(Response.Status.BAD_REQUEST).build();
+            }
         }
 
         // Generate a webrev
         java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"),
                 "jfxmirror", "pr", prNum, prShaHead);
-        String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         logger.debug("Will generate webrev against revision: " + previousCommit);
         ProcessBuilder processBuilder;
         if (OS_NAME.contains("windows")) {
@@ -584,7 +612,7 @@ public class GhEventService {
         }
 
         // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus);
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus, jcheckResults);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
         } catch (IOException e) {
@@ -593,6 +621,23 @@ public class GhEventService {
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.");
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
+
+        // Rollback upstream hg repository back to tipBeforeImport
+        String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
+        if (tipMinusOne.equals(tipBeforeImport)) {
+            logger.debug("Rolling mercurial back to rev before patch import...");
+            StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
+        }
+
+/*        try {
+            //UpdateCommand.on(Bot.upstreamRepo).rev(tipBeforeImport).clean().execute();
+            logger.debug("Rolled mercurial back to rev before patch import.");
+        } catch (IOException e) {
+            logger.error("\u2718 Could not roll upstream hg repository back to rev before import.");
+            logger.debug("exception: ", e);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not roll upstream hg repository back to rev before import.");
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }*/
 
         // If we get this far, then we can set PR status to success.
         setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.");
