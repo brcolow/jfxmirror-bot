@@ -522,7 +522,7 @@ public class GhEventService {
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
-        GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
+        GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck -v --strict");
         try {
             String exe = jcheckCommand.execute();
             logger.debug("jcheck: " + exe);
@@ -557,8 +557,8 @@ public class GhEventService {
         try {
             processBuilder.inheritIO();
             logger.debug("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
-            Process webrev = processBuilder.start();
-        } catch (IOException e) {
+            processBuilder.start();
+        } catch (SecurityException | IOException e) {
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev for PR.");
             logger.error("\u2718 Encountered error trying to generate webrev.");
             logger.debug("exception: ", e);
@@ -593,6 +593,9 @@ public class GhEventService {
         return Response.ok().build();
     }
 
+    /**
+     * Fetches, extracts, and then returns the OCA signatures from Oracle's website.
+     */
     private List<String> fetchOcaSignatures() throws IOException {
         List<String> signatures = new ArrayList<>();
         try {
@@ -613,6 +616,9 @@ public class GhEventService {
         return signatures;
     }
 
+    /**
+     * Set the status of the "jfxmirror_bot" status check using the GitHub API for the given pull request.
+     */
     private void setPrStatus(PrStatus status, String prNum, String prShaHead, String statusUrl, String description) {
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", status.toString().toLowerCase(US));
@@ -635,6 +641,8 @@ public class GhEventService {
     }
 
     /**
+     * Converts the git patch file at the given {@code patchUrl} to a mercurial patch.
+     * <p>
      * Based on https://github.com/mozilla/moz-git-tools/blob/master/git-patch-to-hg-patch
      */
     private static String convertGitPatchToHgPatch(String patchUrl) throws IOException, MessagingException {
@@ -649,6 +657,9 @@ public class GhEventService {
                 emailMessage.getContent().toString().replaceAll("--\\s?\\n[0-9\\.]+\\n$", "");
     }
 
+    /**
+     * Convenience method that makes it a bit nicer to work with email message headers.
+     */
     private static Map<String, String> enumToMap(Enumeration<Header> headers) {
         HashMap<String, String> headersMap = new HashMap<>();
         while (headers.hasMoreElements()) {
@@ -658,6 +669,17 @@ public class GhEventService {
         return headersMap;
     }
 
+    /**
+     * Removes the double quotes surrounding the given {@code string} if it is quoted.
+     * <p>
+     * Examples:
+     * <li>{@code stripQuotes("test")} returns {@code test}
+     * <li>{@code stripQuotes("\"test\"")} returns {@code test}
+     * <li>{@code stripQuotes("\"\"test\"\"")} returns {@code "test"}
+     *
+     * @param string the {@code String} to remove quotes from
+     * @return the result of removing the quotes from the given {@code String}
+     */
     private static String stripQuotes(String string) {
         if (string.length() >= 2 && string.charAt(0) == '"' && string.charAt(string.length() - 1) == '"') {
             return string.substring(1, string.length() - 1);

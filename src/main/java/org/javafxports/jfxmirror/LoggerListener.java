@@ -8,6 +8,12 @@ import ch.qos.logback.core.Context;
 import ch.qos.logback.core.spi.ContextAwareBase;
 import ch.qos.logback.core.spi.LifeCycle;
 
+/**
+ * Allows for using variables in the "logback.xml" configuration that can in turn be set by
+ * system properties. This makes the logger easily configurable by the person running
+ * jfxmirror_bot. Currently the name and location of the log can be configured otherwise
+ * sensible platform-specific defaults are chosen.
+ */
 public class LoggerListener extends ContextAwareBase implements LoggerContextListener, LifeCycle {
     private static final String OS_NAME = System.getProperty("os.name").toLowerCase();
     private static final String USER_HOME = System.getProperty("user.home");

@@ -6,8 +6,9 @@ import ch.qos.logback.core.pattern.color.ANSIConstants;
 import ch.qos.logback.core.pattern.color.ForegroundCompositeConverterBase;
 
 /**
- * Thanks to https://github.com/shuwada/logback-custom-color for the tip on changing the highlight
- * colors.
+ * Controls the colors that are used for the different log levels when logging to stdout.
+ * <p>
+ * Based on: https://github.com/shuwada/logback-custom-color
  */
 public class LoggerColoring extends ForegroundCompositeConverterBase<ILoggingEvent> {
     @Override

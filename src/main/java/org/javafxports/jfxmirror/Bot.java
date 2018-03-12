@@ -1,7 +1,5 @@
 package org.javafxports.jfxmirror;
 
-import static org.fusesource.jansi.Ansi.ansi;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -25,6 +23,13 @@ import com.aragost.javahg.Repository;
 import com.aragost.javahg.RepositoryConfiguration;
 import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
 
+/**
+ * jfxmirror_bot helps contributors to the OpenJFX GitHub repository get their pull requests
+ * accepted into OpenJFX upstream.
+ * <p>
+ * jfxmirror_bot runs a HTTP server (via Jersey with Grizzly 2) which is configured to accept
+ * GitHub webhook events from the "javafxports/openjdk-jfx" repository.
+ */
 public class Bot {
     protected static Client httpClient;
     protected static Repository upstreamRepo;
@@ -38,9 +43,6 @@ public class Bot {
     private static final Logger logger = LoggerFactory.getLogger(Bot.class);
 
     public static void main(String[] args) {
-        // Reset ANSI escape codes (so that even if the program is terminated by Ctrl-C the user's prompt
-        // is not tampered with.
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> System.out.println(ansi().reset())));
 
         if (System.getenv("jfxmirror_gh_token") == null) {
             logger.error("\u2718 \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
@@ -149,6 +151,7 @@ public class Bot {
             logger.info("\u2713 Found \"webrev.ksh\".");
         }
 
+        logger.debug("Checking for OCA signature file...");
         java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
         if (!Files.exists(ocaFile)) {
             logger.debug("Creating OCA signature file: " + ocaFile);
@@ -159,6 +162,8 @@ public class Bot {
                 logger.debug("exception: ", e);
                 System.exit(1);
             }
+        } else {
+            logger.info("\u2713 Found OCA signature file: \"" + ocaFile + "\"");
         }
 
         // Jersey uses java.util.logging - bridge to slf4
@@ -174,7 +179,11 @@ public class Bot {
                 .register(JacksonJaxbJsonProvider.class);
         httpServer = GrizzlyHttpServerFactory.createHttpServer(BASE_URI, resourceConfig);
 
-        Runtime.getRuntime().addShutdownHook(new Thread(Bot::cleanup, "shutdownHook"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            cleanup();
+            // Print the ANSI reset escape code so that, after terminating, the user's prompt is not tampered with.
+            System.out.println("\u001B[0m");
+        }, "shutdownHook"));
 
         try {
             httpServer.start();
@@ -189,7 +198,9 @@ public class Bot {
 
     protected static void cleanup() {
         upstreamRepo.close();
-        logger.debug("Stopping HTTP server...");
-        httpServer.shutdownNow();
+        if (httpServer.isStarted()) {
+            logger.debug("Stopping HTTP server...");
+            httpServer.shutdownNow();
+        }
     }
 }
