@@ -82,7 +82,12 @@ public class GhEventService {
     @GET
     @Path("/pr/{path:.*}.{ext}")
     public Response serveFile(@PathParam("path") String path, @PathParam("ext") String ext) {
-        return Response.ok(STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile()).build();
+        String contentType = "text/html";
+        if (ext.equalsIgnoreCase("patch")) {
+            contentType = "text/plain";
+        }
+        return Response.ok(STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile())
+                .header("Content-Type", contentType).build();
     }
 
     /**
@@ -522,9 +527,9 @@ public class GhEventService {
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
-        GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck -v --strict");
+        GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
         try {
-            String exe = jcheckCommand.execute();
+            String exe = jcheckCommand.execute("-v", "--strict");
             logger.debug("jcheck: " + exe);
             logger.debug("return code: " + jcheckCommand.getReturnCode());
             logger.debug("error string: " + jcheckCommand.getErrorString());
