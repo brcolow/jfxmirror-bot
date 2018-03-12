@@ -60,6 +60,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 @Path("/")
 public class GhEventService {
 
+    private static final String BOT_USERNAME = "jfxmirror-bot";
     private static final java.nio.file.Path STATIC_BASE = Paths.get(System.getProperty("user.home"), "jfxmirror");
     private static final String OS_NAME = System.getProperty("os.name").toLowerCase(US);
     private static final String GITHUB_API = "https://api.github.com";
@@ -194,7 +195,7 @@ public class GhEventService {
         }
 
         String issueBody = commentEvent.get("issue").get("body").asText().trim();
-        if (!issueBody.startsWith("@jfxmirror_bot")) {
+        if (!issueBody.startsWith("@" + BOT_USERNAME)) {
             // Not a comment for us.
             return Response.ok().build();
         }
@@ -202,7 +203,7 @@ public class GhEventService {
         // 1.) @jfxmirror_bot Yes, that's me
         // 2.) @jfxmirror_bot I have signed the OCA under the name \"name\"
         // 3.) @jfxmirror_bot I have now signed the OCA using my GitHub username
-        String comment = issueBody.replaceFirst("@jfxmirror_bot ", "");
+        String comment = issueBody.replaceFirst("@" + BOT_USERNAME + " ", "");
 
         String username = commentEvent.get("comment").get("user").get("login").asText();
         String issueUrl = commentEvent.get("issue").get("url").asText();
@@ -231,8 +232,8 @@ public class GhEventService {
             } else {
                 // Malformed response, did not contain a name in quotes.
                 reply += "Sorry, we could not understand your response because we could not find a name in double quotes." +
-                        "Please try again by adding a comment to this PR of the form:\n\n" +
-                        "\"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\"";
+                        "Please try again by adding a comment to this PR of the form: " +
+                        "`@" + BOT_USERNAME + " I have signed the OCA under the name {name}`.";
             }
 
             try {
@@ -252,16 +253,15 @@ public class GhEventService {
 
                 if (foundName) {
                     reply += "Okay, thanks :thumbsup:. We have updated our records that you have signed the OCA " +
-                            "under the name: \"" + name + "\".";
+                            "under the name `" + name + "`.";
                     Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
                     Files.write(ocaFile, (username + OCA_SEP + name + "\n").getBytes(UTF_8), APPEND);
                 } else {
-                    reply += "You said that you signed the OCA under your name (\"" + name + "\"), but we weren't " +
+                    reply += "You said that you signed the OCA under your name `" + name + "`, but we weren't " +
                             "able to find that name on the " +
                             "[OCA signatures page](http://www.oracle.com/technetwork/community/oca-486395.html) :flushed:." +
                             "Make sure it is correct and try again with the correct name by adding a comment to this " +
-                            "PR of the form:\n\n" +
-                            "\"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\"";
+                            "PR of the form: `@" + BOT_USERNAME + " I have signed the OCA under the name {name}`.";
                 }
             } catch (IOException e) {
                 logger.error("\u2718 Could not download OCA signatures page.");
@@ -290,12 +290,11 @@ public class GhEventService {
                     Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
                     Files.write(ocaFile, (username + OCA_SEP + username + "\n").getBytes(UTF_8), APPEND);
                 } else {
-                    reply += "You said that you signed the OCA under your GitHub username (\"" + username + "\"), but we weren't " +
+                    reply += "You said that you signed the OCA under your GitHub username `" + username + "`, but we weren't " +
                             "able to find that username on the " +
                             "[OCA signatures page](http://www.oracle.com/technetwork/community/oca-486395.html) :flushed:." +
                             "Make sure it is correct and try again with the correct name by adding a comment to this " +
-                            "PR of the form:\n\n" +
-                            "\"@jfxmirror_bot I have now signed the OCA using my GitHub username\"";
+                            "PR of the form: `@" + BOT_USERNAME + " I have now signed the OCA using my GitHub username`.";
                 }
             } catch (IOException e) {
                 logger.error("\u2718 Could not download OCA signatures page.");
@@ -304,7 +303,7 @@ public class GhEventService {
             }
         } else {
             // Can't understand the response
-            reply += "Sorry, we could not understand your response. :confused:";
+            reply += "Sorry, we could not understand your response :confused:.";
         }
 
         Response commentResponse = Bot.httpClient.target(issueUrl)
@@ -481,7 +480,7 @@ public class GhEventService {
                     logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
                     comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
                             "a signatory with your GitHub username: `" + ocaLine + "`. **If that's you**, add a comment on " +
-                            "this PR saying: `@jfxmirror_bot Yes, that's me`. **Otherwise, if that's not you**:\n\n";
+                            "this PR saying: `@" + BOT_USERNAME + " Yes, that's me`. **Otherwise, if that's not you**:\n\n";
                 } else {
                     try {
                         Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
@@ -496,14 +495,14 @@ public class GhEventService {
                             "not find a signature line with your GitHub username.\n\n";
                 }
                 comment += "**If you have already signed the OCA**:\n" +
-                        "Add a comment on this PR saying: `@jfxmirror_bot I have signed the OCA under the name {name}` " +
+                        "Add a comment on this PR saying: `@" + BOT_USERNAME + " I have signed the OCA under the name {name}` " +
                         "where `{name}` is the first, name-like part of an OCA signature line. For example, the signature line " +
-                        "\"Michael Ennen - GlassFish Jersey - brcolow\" has a first, name-like part of \"Michael Ennen\".\n\n" +
+                        "`Michael Ennen - GlassFish Jersey - brcolow` has a first, name-like part of `Michael Ennen`.\n\n" +
                         "**If you have never signed the OCA before:**\n" +
                         "Follow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
                         "doing so. Make sure to fill out the username portion of the form with your GitHub username. " +
                         "Once you have signed the OCA and your name has been added to the list of signatures, " +
-                        "add a comment on this PR saying: `@jfxmirror_bot I have now signed the OCA using my GitHub username`.";
+                        "add a comment on this PR saying: `@" + BOT_USERNAME + " I have now signed the OCA using my GitHub username`.";
 
                 Response commentResponse = Bot.httpClient.target(commentsUrl)
                         .request()
@@ -632,7 +631,7 @@ public class GhEventService {
         pendingStatus.put("state", status.toString().toLowerCase(US));
         pendingStatus.put("target_url", Bot.BASE_URI.resolve("pr/" + prNum + "/" + prShaHead + "/index.html").toASCIIString());
         pendingStatus.put("description", description);
-        pendingStatus.put("context", "jfxmirror_bot");
+        pendingStatus.put("context", BOT_USERNAME);
 
         Response statusResponse = Bot.httpClient.target(statusUrl)
                 .request()
