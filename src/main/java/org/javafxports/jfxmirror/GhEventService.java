@@ -342,7 +342,7 @@ public class GhEventService {
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API, repoFullName[0], repoFullName[1], prShaHead);
 
         // Set the status of the PR to pending while we do the necessary checks.
-        setPrStatus(PrStatus.PENDING, statusUrl, "Checking for upstream mergeability...");
+        setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...");
 
         // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
         // Currently we lose the commit messages of all but the first commit.
@@ -351,7 +351,7 @@ public class GhEventService {
         try {
             hgPatch = convertGitPatchToHgPatch(patchUrl);
         } catch (IOException | MessagingException e) {
-            setPrStatus(PrStatus.ERROR, statusUrl, "Could not convert git patch to hg patch.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not convert git patch to hg patch.");
             logger.error("\u2718 Encountered error trying to convert git patch to hg patch.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -363,7 +363,7 @@ public class GhEventService {
             try {
                 Files.createDirectories(patchesDir);
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, statusUrl, "Could not create patches directory.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not create patches directory.");
                 logger.error("\u2718 Could not create patches directory: " + patchesDir);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -373,7 +373,7 @@ public class GhEventService {
         try {
             Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
         } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, statusUrl, "Could not write hg patch to file.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.");
             logger.error("\u2718 Could not write hg patch to file.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -385,7 +385,7 @@ public class GhEventService {
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
         } catch (IOException | ExecutionException e) {
-            setPrStatus(PrStatus.FAILURE, statusUrl, "Could not apply PR changeset to upstream hg repository.");
+            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Could not apply PR changeset to upstream hg repository.");
             logger.error("\u2718 Could not apply PR changeset to upstream mercurial repository.");
             logger.debug("exception: ", e);
             // return Response.status(Response.Status.BAD_REQUEST).build();
@@ -400,7 +400,7 @@ public class GhEventService {
                 String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
                 ocaStatus = OcaStatus.valueOf(ocaMarkerContents);
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, statusUrl, "Could not read OCA marker file.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA marker file.");
                 logger.error("\u2718 Could not read OCA marker file: " + ocaMarkerFile);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -415,7 +415,7 @@ public class GhEventService {
                 for (String line : ocaFileLines) {
                     String[] gitHubUsernameOcaName = line.split(OCA_SEP);
                     if (gitHubUsernameOcaName.length != 2) {
-                        setPrStatus(PrStatus.ERROR, statusUrl, "OCA signature file malformed.");
+                        setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "OCA signature file malformed.");
                         logger.error("\u2718 OCA signature file malformed (expecting separator \"" + OCA_SEP + "\").");
                         logger.debug("Bad line: " + line);
                         return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -431,7 +431,7 @@ public class GhEventService {
                     }
                 }
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, statusUrl, "Could not read OCA signatures file.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA signatures file.");
                 logger.error("\u2718 Could not read OCA signatures file.");
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.BAD_REQUEST).build();
@@ -455,7 +455,7 @@ public class GhEventService {
                         }
                     }
                 } catch (IOException e) {
-                    setPrStatus(PrStatus.ERROR, statusUrl, "Could not download OCA signatures page.");
+                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not download OCA signatures page.");
                     logger.error("\u2718 Could not download OCA signatures page.");
                     logger.debug("exception: ", e);
                     return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -474,8 +474,8 @@ public class GhEventService {
 
                     logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
                     comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
-                            "a signatory with your GitHub username:\n`" + ocaLine + "`\nIf that's you, add a comment on " +
-                            "this PR saying \"@jfxmirror_bot Yes, that's me\". Otherwise, if that's not you:\n\n";
+                            "a signatory with your GitHub username: `" + ocaLine + "`. **If that's you**, add a comment on " +
+                            "this PR saying: `@jfxmirror_bot Yes, that's me`. **Otherwise, if that's not you**:\n\n";
                 } else {
                     try {
                         Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
@@ -489,14 +489,15 @@ public class GhEventService {
                     comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) but could " +
                             "not find a signature line with your GitHub username.\n\n";
                 }
-                comment += "* If you have already signed the OCA: " +
-                        "\tAdd a comment on this PR saying:\n\n\"@jfxmirror_bot I have signed the OCA under the name \"`{name}`\"\n" +
-                        "\twhere `{name}` is the first, name-like part of an OCA signature line. For example the signature line " +
+                comment += "**If you have already signed the OCA**:\n" +
+                        "Add a comment on this PR saying: `@jfxmirror_bot I have signed the OCA under the name {name}` " +
+                        "where `{name}` is the first, name-like part of an OCA signature line. For example, the signature line " +
                         "\"Michael Ennen - GlassFish Jersey - brcolow\" has a first, name-like part of \"Michael Ennen\".\n\n" +
-                        "* If you have not yet signed the OCA:\n" +
-                        "\tFollow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
-                        "doing so. Once you have signed the OCA and your name has been added to the list of signatures, " +
-                        "add a comment on this PR saying:\n\n\"@jfxmirror_bot I have now signed the OCA using my GitHub username\".";
+                        "**If you have never signed the OCA before:**\n" +
+                        "Follow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
+                        "doing so. Make sure to fill out the username portion of the form with your GitHub username. " +
+                        "Once you have signed the OCA and your name has been added to the list of signatures, " +
+                        "add a comment on this PR saying: `@jfxmirror_bot I have now signed the OCA using my GitHub username`.";
 
                 Response commentResponse = Bot.httpClient.target(commentsUrl)
                         .request()
@@ -508,7 +509,7 @@ public class GhEventService {
                     logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
                             "PR with confirming their signing of the OCA.");
                     logger.debug("GitHub response: " + commentResponse.getEntity());
-                    setPrStatus(PrStatus.ERROR, statusUrl, "Could not post comment to PR.");
+                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not post comment to PR.");
                     return Response.status(Response.Status.BAD_REQUEST).build();
                 }
             }
@@ -551,20 +552,20 @@ public class GhEventService {
                     "-N", "-m",
                     "-o", webRevOutputPath.toString());
         }
-        // TODO: Add -c argument for the bug ID when we implenment JBS bugs
+        // TODO: Add -c argument for the bug ID when we implement JBS bugs
         processBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
             processBuilder.inheritIO();
             logger.debug("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
             Process webrev = processBuilder.start();
         } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, statusUrl, "Could not generate webrev for PR.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev for PR.");
             logger.error("\u2718 Encountered error trying to generate webrev.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        // Make status page at "prNum/prShaHead" from the above data, set status to success/fail depending on the above
+        // Make status page at "pr/{prNum}/{prShaHead}" from the above data, set status to success/fail
         java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
         if (!Files.exists(statusPath)) {
             try {
@@ -582,12 +583,12 @@ public class GhEventService {
         } catch (IOException e) {
             logger.error("\u2718 Could not write \"index.html\" to: " + statusPath);
             logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, statusUrl, "Could not write status page.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.");
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         // If we get this far, then we can set PR status to success.
-        setPrStatus(PrStatus.SUCCESS, statusUrl, "Ready to merge with upstream.");
+        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.");
 
         return Response.ok().build();
     }
@@ -612,10 +613,10 @@ public class GhEventService {
         return signatures;
     }
 
-    private void setPrStatus(PrStatus status, String statusUrl, String description) {
+    private void setPrStatus(PrStatus status, String prNum, String prShaHead, String statusUrl, String description) {
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", status.toString().toLowerCase(US));
-        pendingStatus.put("target_url", statusUrl);
+        pendingStatus.put("target_url", Bot.BASE_URI.resolve("pr/" + prNum + "/" + prShaHead + "/index.html").toASCIIString());
         pendingStatus.put("description", description);
         pendingStatus.put("context", "jfxmirror_bot");
 
