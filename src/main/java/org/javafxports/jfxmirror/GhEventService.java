@@ -50,6 +50,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.aragost.javahg.commands.ExecutionException;
+import com.aragost.javahg.commands.IdentifyCommand;
 import com.aragost.javahg.commands.ImportCommand;
 import com.aragost.javahg.internals.GenericCommand;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -538,15 +539,17 @@ public class GhEventService {
         }
 
         // Generate a webrev
-        java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
-
+        java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"),
+                "jfxmirror", "pr", prNum, prShaHead);
+        String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
+        logger.debug("Will generate webrev against revision: " + previousCommit);
         ProcessBuilder processBuilder;
         if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString()
                             .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/")
-                    + " -N -m -o " + webRevOutputPath.toString()
+                    + " -r " + previousCommit + " -N -m -o " + webRevOutputPath.toString()
                     .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") + "\"";
             logger.info("invocation: " + kshInvocation);
             processBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
