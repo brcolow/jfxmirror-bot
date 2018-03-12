@@ -1,7 +1,7 @@
 package org.javafxports.jfxmirror;
 
 public class StatusPage {
-    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus, String jcheckResults) {
+    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus) {
         return " <!DOCTYPE html>\n" +
                 "<html>\n" +
                 "  <head>\n" +
@@ -13,7 +13,7 @@ public class StatusPage {
                 "      <p>JBS Bug: </p>" +
                 "      <p>Mercurial Patch: <a href=\"./patch/" + prNum + ".patch\">View</a></p>" +
                 "      <p>Webrev: <a href=\"./webrev/\">View</a> | <a href=\"./webrev.zip\">Download</a></p>" +
-                "      <p>jcheck: " + jcheckResults + "</p>" +
+                "      <p>jcheck: <a href=\"./jcheck/jcheck.txt\">View</a></p>" +
                 "  </body>\n" +
                 "</html>\n";
     }

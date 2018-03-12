@@ -22,6 +22,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Scanner;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -546,6 +547,25 @@ public class GhEventService {
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
+        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "pr", prNum, prShaHead, "jcheck.txt");
+        ProcessBuilder jcheckBuilder = new ProcessBuilder("hg", "jcheck")
+                .directory(Bot.upstreamRepo.getDirectory())
+                .redirectError(jcheckOutputPath.toFile())
+                .redirectOutput(jcheckOutputPath.toFile());
+
+        try {
+            Process jcheck = jcheckBuilder.start();
+            jcheck.waitFor(1, TimeUnit.MINUTES);
+        } catch (IOException | InterruptedException e) {
+            logger.error("\u2718 Could not run jcheck.");
+            logger.debug("exception: ", e);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.");
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        /*
+        // This runs jcheck by using a javahg mercurial extension. The problem is that the output is not captured
+        // via getErrorString(), so it is useless for our purposes. It would be much nicer to use than a raw hg process.
         GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
         String jcheckResults = null;
         try {
@@ -565,12 +585,13 @@ public class GhEventService {
                 return Response.status(Response.Status.BAD_REQUEST).build();
             }
         }
+        */
 
         // Generate a webrev
         java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"),
                 "jfxmirror", "pr", prNum, prShaHead);
         logger.debug("Will generate webrev against revision: " + previousCommit);
-        ProcessBuilder processBuilder;
+        ProcessBuilder webrevBuilder;
         if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
@@ -579,21 +600,27 @@ public class GhEventService {
                     + " -r " + previousCommit + " -N -m -o " + webRevOutputPath.toString()
                     .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") + "\"";
             logger.info("invocation: " + kshInvocation);
-            processBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
+            webrevBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
         } else {
             // Just call ksh directly.
-            processBuilder = new ProcessBuilder("ksh",
+            webrevBuilder = new ProcessBuilder("ksh",
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
                     "-N", "-m",
                     "-o", webRevOutputPath.toString());
         }
         // TODO: Add -c argument for the bug ID when we implement JBS bugs
-        processBuilder.directory(Bot.upstreamRepo.getDirectory());
+        webrevBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
-            processBuilder.inheritIO();
+            webrevBuilder.inheritIO();
             logger.debug("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
-            processBuilder.start();
-        } catch (SecurityException | IOException e) {
+            Process webrev = webrevBuilder.start();
+            boolean webrevFinished = webrev.waitFor(2, TimeUnit.MINUTES);
+            if (!webrevFinished) {
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev in time.");
+                logger.error("\u2718 Could not generate webrev in time.");
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+        } catch (SecurityException | IOException | InterruptedException e) {
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev for PR.");
             logger.error("\u2718 Encountered error trying to generate webrev.");
             logger.debug("exception: ", e);
@@ -612,7 +639,7 @@ public class GhEventService {
         }
 
         // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus, jcheckResults);
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
         } catch (IOException e) {
@@ -623,21 +650,12 @@ public class GhEventService {
         }
 
         // Rollback upstream hg repository back to tipBeforeImport
+        // UpdateCommand.on(Bot.upstreamRepo).rev(tipBeforeImport).clean().execute();
         String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         if (tipMinusOne.equals(tipBeforeImport)) {
             logger.debug("Rolling mercurial back to rev before patch import...");
             StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
         }
-
-/*        try {
-            //UpdateCommand.on(Bot.upstreamRepo).rev(tipBeforeImport).clean().execute();
-            logger.debug("Rolled mercurial back to rev before patch import.");
-        } catch (IOException e) {
-            logger.error("\u2718 Could not roll upstream hg repository back to rev before import.");
-            logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not roll upstream hg repository back to rev before import.");
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }*/
 
         // If we get this far, then we can set PR status to success.
         setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.");

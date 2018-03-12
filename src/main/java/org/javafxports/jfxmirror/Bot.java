@@ -3,6 +3,7 @@ package org.javafxports.jfxmirror;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -123,6 +124,18 @@ public class Bot {
             }
         } else {
             logger.info("\u2713 Found jcheck config file: " + jcheckConfPath);
+        }
+
+        Path hgRcPath = Bot.upstreamRepo.getDirectory().toPath().resolve(".hg").resolve("hgrc");
+        if (!Files.exists(hgRcPath)) {
+            logger.debug("Writing repository-local hgrc for using jcheck.");
+            try {
+                Files.write(hgRcPath, ("[extensions]\njcheck = " + jcheckPath + "\n").getBytes(StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                logger.error("\u2718 Could not create repository-local hgrc.");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
         }
 
         logger.debug("Checking for \"webrev.ksh\"...");
