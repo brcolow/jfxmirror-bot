@@ -557,6 +557,7 @@ public class GhEventService {
         // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
         // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
+        // Here's what JIRA does: https://confluence.atlassian.com/jirasoftwarecloud/referencing-issues-in-your-development-work-777002789.html
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
