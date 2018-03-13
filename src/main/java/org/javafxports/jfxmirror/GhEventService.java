@@ -352,10 +352,14 @@ public class GhEventService {
         logger.debug("Event: Pull request #" + prNum + " " + action);
 
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
-        String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API, repoFullName[0], repoFullName[1], prShaHead);
+        String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API,
+                repoFullName[0], repoFullName[1], prShaHead);
 
         // Set the status of the PR to pending while we do the necessary checks.
-        setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...");
+        setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...", null);
+
+        // TODO: Because some files exist only in the downstream GitHub repository and not the upstream hg repository,
+        // we should exclude all changes to those files so that the patch applies cleanly.
 
         // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
         // Currently we lose the commit messages of all but the first commit.
@@ -364,7 +368,7 @@ public class GhEventService {
         try {
             hgPatch = convertGitPatchToHgPatch(patchUrl);
         } catch (IOException | MessagingException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not convert git patch to hg patch.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not convert git patch to hg patch.", null);
             logger.error("\u2718 Encountered error trying to convert git patch to hg patch.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -377,7 +381,7 @@ public class GhEventService {
                 logger.debug("Creating directory: " + patchDir);
                 Files.createDirectories(patchDir);
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not create patches directory.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not create patches directory.", null);
                 logger.error("\u2718 Could not create patches directory: " + patchDir);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -388,7 +392,7 @@ public class GhEventService {
             logger.debug("Writing hg patch: " + hgPatchPath);
             Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
         } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.", null);
             logger.error("\u2718 Could not write hg patch to file.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -405,7 +409,8 @@ public class GhEventService {
             logger.debug("Updating upstream hg repository...");
             UpdateResult updateResult = UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
-            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Could not apply PR changeset to upstream hg repository.");
+            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
+                    "Could not apply PR changeset to upstream hg repository.", tipBeforeImport);
             logger.error("\u2718 Could not apply PR changeset to upstream mercurial repository.");
             logger.debug("exception: ", e);
             // FIXME: Uncomment this after testing
@@ -415,8 +420,10 @@ public class GhEventService {
         logger.debug("Previous commit (after import): " + previousCommit);
         if (!previousCommit.equals(tipBeforeImport)) {
             logger.error("\u2718 The tip before importing is not equal to the previous commit!");
-            // setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Upstream hg repository error.");
-            // Response.status(Response.Status.BAD_REQUEST).build();
+            logger.debug("This can happen if the hg repository was not rolled back after importing GitHub PR.");
+            logger.debug("This requires manual intervention - the hg repository must be rolled back.");
+            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Upstream hg repository error.", null);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         // If necessary, check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
@@ -428,7 +435,7 @@ public class GhEventService {
                 String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
                 ocaStatus = OcaStatus.valueOf(ocaMarkerContents.toUpperCase(Locale.US));
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA marker file.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA marker file.", tipBeforeImport);
                 logger.error("\u2718 Could not read OCA marker file: " + ocaMarkerFile);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -443,7 +450,8 @@ public class GhEventService {
                 for (String line : ocaFileLines) {
                     String[] gitHubUsernameOcaName = line.split(OCA_SEP);
                     if (gitHubUsernameOcaName.length != 2) {
-                        setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "OCA signature file malformed.");
+                        setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                                "OCA signature file malformed.", tipBeforeImport);
                         logger.error("\u2718 OCA signature file malformed (expecting separator \"" + OCA_SEP + "\").");
                         logger.debug("Bad line: " + line);
                         return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -459,7 +467,8 @@ public class GhEventService {
                     }
                 }
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA signatures file.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                        "Could not read OCA signatures file.", tipBeforeImport);
                 logger.error("\u2718 Could not read OCA signatures file.");
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.BAD_REQUEST).build();
@@ -483,7 +492,8 @@ public class GhEventService {
                         }
                     }
                 } catch (IOException e) {
-                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not download OCA signatures page.");
+                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                            "Could not download OCA signatures page.", tipBeforeImport);
                     logger.error("\u2718 Could not download OCA signatures page.");
                     logger.debug("exception: ", e);
                     return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -537,7 +547,8 @@ public class GhEventService {
                     logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
                             "PR with confirming their signing of the OCA.");
                     logger.debug("GitHub response: " + commentResponse.getEntity());
-                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not post comment to PR.");
+                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                            "Could not post comment to PR.", tipBeforeImport);
                     return Response.status(Response.Status.BAD_REQUEST).build();
                 }
             }
@@ -556,7 +567,7 @@ public class GhEventService {
         } catch (IOException e) {
             logger.error("\u2718 Could not run jcheck.");
             logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.", tipBeforeImport);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
         ProcessBuilder jcheckBuilder = new ProcessBuilder("hg", "jcheck")
@@ -570,13 +581,14 @@ public class GhEventService {
         } catch (IOException | InterruptedException e) {
             logger.error("\u2718 Could not run jcheck.");
             logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.", tipBeforeImport);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        /*
         // This runs jcheck by using a javahg mercurial extension. The problem is that the output is not captured
-        // via getErrorString(), so it is useless for our purposes. It would be much nicer to use than a raw hg process.
+        // via getErrorString(), so it is useless for our purposes. It would be much nicer to use than a raw hg process
+        // as we do currently.
+        /*
         GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
         String jcheckResults = null;
         try {
@@ -627,18 +639,18 @@ public class GhEventService {
             Process webrev = webrevBuilder.start();
             boolean webrevFinished = webrev.waitFor(2, TimeUnit.MINUTES);
             if (!webrevFinished) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev in time.");
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev in time.", tipBeforeImport);
                 logger.error("\u2718 Could not generate webrev in time.");
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         } catch (SecurityException | IOException | InterruptedException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev for PR.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev for PR.", tipBeforeImport);
             logger.error("\u2718 Encountered error trying to generate webrev.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        // Make status page at "pr/{prNum}/{prShaHead}" from the above data, set status to success/fail
+        // Make status page at "pr/{prNum}/{prShaHead}" from the above data, set status to success/fail.
         java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
         if (!Files.exists(statusPath)) {
             try {
@@ -656,14 +668,26 @@ public class GhEventService {
         } catch (IOException e) {
             logger.error("\u2718 Could not write \"index.html\" to: " + statusPath);
             logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.");
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.", tipBeforeImport);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         // Rollback upstream hg repository back to tipBeforeImport
-        // UpdateCommand.on(Bot.upstreamRepo).rev(tipBeforeImport).clean().execute();
+        rollback(tipBeforeImport);
+
+        // If we get this far, then we can set PR status to success.
+        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
+
+        return Response.ok().build();
+    }
+
+    /**
+     * Rollback the upstream mercurial repository iff the given {@code tipToRollbackTo} is the previous tip
+     * before importing.
+     */
+    private static void rollback(String tipToRollbackTo) {
         String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
-        if (tipMinusOne.equals(tipBeforeImport)) {
+        if (tipMinusOne.equals(tipToRollbackTo)) {
             logger.debug("Rolling mercurial back to rev before patch import...");
             try {
                 StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
@@ -672,19 +696,17 @@ public class GhEventService {
             }
         }
 
-        // If we get this far, then we can set PR status to success.
-        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.");
-
-        return Response.ok().build();
     }
-
     /**
      * Fetches, extracts, and then returns the OCA signatures from Oracle's website.
      */
-    private List<String> fetchOcaSignatures() throws IOException {
+    private static List<String> fetchOcaSignatures() throws IOException {
         List<String> signatures = new ArrayList<>();
         try {
             Document doc = Jsoup.connect("http://www.oracle.com/technetwork/community/oca-486395.html").get();
+            // If the HTML of the oca-486395.html page changes, this selector will need to change. It should select
+            // each <ul> that corresponds to a letter (A-W) or "XYZ" which groups the signatures alphabetically by
+            // last name.
             Elements signatoryLetters = doc.select(".dataTable > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(1) > ul:nth-child(2n+5)");
             for (Element signatoryLetter : signatoryLetters) {
                 Elements signatories = signatoryLetter.select("li");
@@ -704,7 +726,11 @@ public class GhEventService {
     /**
      * Set the status of the "jfxmirror_bot" status check using the GitHub API for the given pull request.
      */
-    private void setPrStatus(PrStatus status, String prNum, String prShaHead, String statusUrl, String description) {
+    private static void setPrStatus(PrStatus status, String prNum, String prShaHead, String statusUrl,
+                                    String description, String tipBeforeImport) {
+        if (status != PrStatus.SUCCESS && tipBeforeImport != null) {
+            rollback(tipBeforeImport);
+        }
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", status.toString().toLowerCase(US));
         pendingStatus.put("target_url", Bot.BASE_URI.resolve("pr/" + prNum + "/" + prShaHead + "/index.html").toASCIIString());
@@ -769,15 +795,7 @@ public class GhEventService {
         if (string.length() >= 2 && string.charAt(0) == '"' && string.charAt(string.length() - 1) == '"') {
             return string.substring(1, string.length() - 1);
         }
-
         return string;
-    }
-
-    enum PrStatus {
-        ERROR,
-        FAILURE,
-        PENDING,
-        SUCCESS
     }
 
 }
