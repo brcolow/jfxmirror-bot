@@ -13,7 +13,7 @@ public class StatusPage {
                 "      <p>JBS Bug: </p>" +
                 "      <p>Mercurial Patch: <a href=\"./patch/" + prNum + ".patch\">View</a></p>" +
                 "      <p>Webrev: <a href=\"./webrev/\">View</a> | <a href=\"./webrev.zip\">Download</a></p>" +
-                "      <p>jcheck: <a href=\"./jcheck/jcheck.txt\">View</a></p>" +
+                "      <p>jcheck: <a href=\"./jcheck.txt\">View</a></p>" +
                 "  </body>\n" +
                 "</html>\n";
     }

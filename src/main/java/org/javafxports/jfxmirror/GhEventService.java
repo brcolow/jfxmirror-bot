@@ -14,6 +14,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -51,14 +52,12 @@ import org.jsoup.select.Selector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.aragost.javahg.Changeset;
 import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.IdentifyCommand;
 import com.aragost.javahg.commands.ImportCommand;
 import com.aragost.javahg.commands.UpdateCommand;
 import com.aragost.javahg.commands.UpdateResult;
 import com.aragost.javahg.ext.mq.StripCommand;
-import com.aragost.javahg.internals.GenericCommand;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -91,8 +90,11 @@ public class GhEventService {
     @Path("/pr/{path:.*}.{ext}")
     public Response serveFile(@PathParam("path") String path, @PathParam("ext") String ext) {
         String contentType = "text/html";
-        if (ext.equalsIgnoreCase("patch")) {
+        if (ext.equalsIgnoreCase("patch") || ext.equalsIgnoreCase("txt")) {
             contentType = "text/plain";
+        }
+        if (ext.equalsIgnoreCase("zip")) {
+            contentType = "application/zip";
         }
         return Response.ok(STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile())
                 .header("Content-Type", contentType).build();
@@ -547,7 +549,16 @@ public class GhEventService {
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
-        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "pr", prNum, prShaHead, "jcheck.txt");
+        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "jcheck.txt");
+        try {
+            Files.write(jcheckOutputPath, "".getBytes(), StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        } catch (IOException e) {
+            logger.error("\u2718 Could not run jcheck.");
+            logger.debug("exception: ", e);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.");
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
         ProcessBuilder jcheckBuilder = new ProcessBuilder("hg", "jcheck")
                 .directory(Bot.upstreamRepo.getDirectory())
                 .redirectError(jcheckOutputPath.toFile())
@@ -654,7 +665,11 @@ public class GhEventService {
         String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         if (tipMinusOne.equals(tipBeforeImport)) {
             logger.debug("Rolling mercurial back to rev before patch import...");
-            StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
+            try {
+                StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
+            } catch (Exception e) {
+                logger.debug("exception: ", e);
+            }
         }
 
         // If we get this far, then we can set PR status to success.

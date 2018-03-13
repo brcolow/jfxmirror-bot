@@ -130,7 +130,7 @@ public class Bot {
         if (!Files.exists(hgRcPath)) {
             logger.debug("Writing repository-local hgrc for using jcheck.");
             try {
-                Files.write(hgRcPath, ("[extensions]\njcheck = " + jcheckPath + "\n").getBytes(StandardCharsets.UTF_8));
+                Files.write(hgRcPath, ("[extensions]\njcheck = " + jcheckPath + "\nstrip = \n").getBytes(StandardCharsets.UTF_8));
             } catch (IOException e) {
                 logger.error("\u2718 Could not create repository-local hgrc.");
                 logger.debug("exception: ", e);
