@@ -18,11 +18,13 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Scanner;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -59,6 +61,7 @@ import com.aragost.javahg.commands.UpdateCommand;
 import com.aragost.javahg.commands.UpdateResult;
 import com.aragost.javahg.ext.mq.StripCommand;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -72,6 +75,9 @@ public class GhEventService {
     private static final String GH_ACCEPT = "application/vnd.github.v3+json";
     private static final String GH_ACCESS_TOKEN = System.getenv("jfxmirror_gh_token");
     private static final String OCA_SEP = "@@@";
+    private static final Pattern BUG_PATTERN = Pattern.compile("JDK-\\d\\d\\d\\d\\d\\d\\d");
+    private static final Pattern DOUBLE_QUOTE_PATTERN = Pattern.compile("\"([^\"]*)\"");
+
     private static final Logger logger = LoggerFactory.getLogger(GhEventService.class);
 
     /**
@@ -237,11 +243,10 @@ public class GhEventService {
             }
         } else if (comment.startsWith("I have signed the OCA under the name")) {
             // Grab the name in double quotes.
-            Pattern pattern = Pattern.compile("\"([^\"]*)\"");
-            Matcher matcher = pattern.matcher(comment);
+            Matcher doubleQuoteMatcher = DOUBLE_QUOTE_PATTERN.matcher(comment);
             String name = null;
-            if (matcher.find()) {
-                name = stripQuotes(matcher.group(0));
+            if (doubleQuoteMatcher.find()) {
+                name = stripQuotes(doubleQuoteMatcher.group(0));
             } else {
                 // Malformed response, did not contain a name in quotes.
                 reply += OcaReplies.replyWhenNotFoundNameInQuotes(BOT_USERNAME);
@@ -315,7 +320,7 @@ public class GhEventService {
 
         if (commentResponse.getStatus() == 404) {
             logger.error("\u2718 Could not post comment on PR #" + commentEvent.get("issue").get("number"));
-            logger.debug("GitHub response: " + commentResponse.getEntity());
+            logger.debug("GitHub response: " + commentResponse.readEntity(String.class));
             return Response.status(Response.Status.BAD_REQUEST).build();
         }
         return Response.ok().build();
@@ -535,7 +540,7 @@ public class GhEventService {
                 if (commentResponse.getStatus() == 404) {
                     logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who " +
                             "opened the PR with confirming their signing of the OCA.");
-                    logger.debug("GitHub response: " + commentResponse.getEntity());
+                    logger.debug("GitHub response: " + commentResponse.readEntity(String.class));
                     setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
                             "Could not post comment to PR.", tipBeforeImport);
                     return Response.status(Response.Status.BAD_REQUEST).build();
@@ -543,24 +548,57 @@ public class GhEventService {
             }
         }
 
-        // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
-        // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
-        // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
+        // See if there is a JBS bug associated with this PR. This is accomplished by checking if any of the following
+        // places contain the text "JDK-xxxxxxx" where x is some integer:
+        // 1.) Each commit message of the commits that make up this PR.
+        // 2.) The PR title.
+        // 3.) The branch name of this PR.
         logger.debug("Checking if this PR is associated with any JBS bugs...");
-        List<String> jbsBugs = new ArrayList<>();
-        // Here's what JIRA does: https://confluence.atlassian.com/jirasoftwarecloud/referencing-issues-in-your-development-work-777002789.html
-        // JBS for JavaFX: https://bugs.openjdk.java.net/browse/JDK-8199498?jql=project%20%3D%20JDK%20AND%20component%20%3D%20javafx
+        Set<String> jbsBugs = new HashSet<>();
 
-        // Overkill to use the JIRA REST API? That we we can at least determine if the JBS bug report we think this
-        // PR is for is open, is for the javafx "component", etc?
-        // https://developer.atlassian.com/server/jira/platform/rest-apis/#jira-rest-clients
-        // https://ecosystem.atlassian.net/wiki/spaces/JRJC/overview
-        // https://mvnrepository.com/artifact/com.atlassian.jira/jira-rest-java-client-api/4.0.0
-        // Example for above bug: https://bugs.openjdk.java.net/rest/api/latest/issue/JDK-8199498
-        // Here's one way to get all the commits for this PR:
-        // https://api.github.com/repos/javafxports/openjdk-jfx/pulls/{prNum}/commits?per_page=250
-        // This returns an array of commits. We want to grab every commit.message from it.
-        // We can then iterate over them, searching the messages for "JDK-12345678".
+        // Check if any commit messages of this PR contain a JBS bug (like JDK-xxxxxxx).
+        String commitsUrl = pullRequest.get("_links").get("commits").asText();
+        Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
+                .request()
+                .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                .accept(GH_ACCEPT)
+                .get();
+
+        try {
+            JsonNode commitsJson = new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
+            for (JsonNode commitJson : commitsJson) {
+                String commitMessage = commitJson.get("commit").get("message").asText();
+                Matcher bugPatternMatcher = BUG_PATTERN.matcher(commitMessage);
+                if (bugPatternMatcher.find()) {
+                    jbsBugs.add(bugPatternMatcher.group(0));
+                }
+            }
+        } catch (IOException e) {
+            logger.error("\u2718 Could not read commits JSON.");
+            logger.debug("exception: ", e);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read commits JSON.", tipBeforeImport);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        // Check if the branch name of the PR contains a JBS bug.
+        String prBranchName = pullRequest.get("head").get("ref").asText();
+        Matcher bugMatcher = BUG_PATTERN.matcher(prBranchName);
+        if (bugMatcher.find()) {
+            jbsBugs.add(bugMatcher.group(0));
+        }
+
+        // Check if the PR title contains a JBS bug.
+        String prTitle = pullRequest.get("title").asText();
+        bugMatcher = BUG_PATTERN.matcher(prTitle);
+        if (bugMatcher.find()) {
+            jbsBugs.add(bugMatcher.group(0));
+        }
+
+        for (String jbsBug : jbsBugs) {
+            // Use JIRA rest client API to check that this bug exists, is open, and is for javafx component.
+
+            // Should we allow for multiple bugs per PR?
+        }
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");

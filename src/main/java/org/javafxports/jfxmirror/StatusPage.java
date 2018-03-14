@@ -1,10 +1,10 @@
 package org.javafxports.jfxmirror;
 
-import java.util.List;
+import java.util.Collection;
 import java.util.stream.Collectors;
 
 public class StatusPage {
-    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus, List<String> jbsBugs) {
+    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus, Collection<String> jbsBugs) {
         return " <!DOCTYPE html>\n" +
                 "<html>\n" +
                 "  <head>\n" +
