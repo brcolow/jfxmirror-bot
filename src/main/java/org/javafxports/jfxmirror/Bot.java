@@ -34,8 +34,8 @@ import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
 public class Bot {
     protected static Client httpClient;
     protected static Repository upstreamRepo;
-    protected static final URI BASE_URI = URI.create("http://localhost:8433/");
     private static HttpServer httpServer;
+    protected static final URI BASE_URI = URI.create("http://localhost:8433/");
     private static final String JCHECK_URL = "http://cr.openjdk.java.net/~kcr/jcheck/bin/jcheck.py";
     private static final String JCHECK_CONF_URL = "http://cr.openjdk.java.net/%7Ekcr/jcheck/conf";
     private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";

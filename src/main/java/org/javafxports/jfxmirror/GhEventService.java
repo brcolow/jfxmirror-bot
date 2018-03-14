@@ -72,7 +72,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 
 @Path("/")
@@ -370,7 +369,7 @@ public class GhEventService {
         // we should exclude all changes to those files so that the patch applies cleanly. We can probably make a
         // black-list of files to exclude, which would include the README, .github, .ci, appveyor.yml, .travis.yml, etc.
         // One way to do this would be to git checkout the HEAD of the pull request, perform a git reset --mixed,
-        // and only add unstaged files that are not in our blacklist (which includes the files mentioned before).
+        // and only add back the unstaged files that are not in our blacklist (which includes the files mentioned before).
         // Then we could re-commit, and use that for our git patch base.
 
         // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
@@ -410,6 +409,12 @@ public class GhEventService {
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
+
+        // TODO: Technically we don't want to import the hg patch with the upstream repository at the latest commit
+        // but instead want it to be at the latest commit that has been mirrored to the GitHub repository. To take this
+        // into account is kind of tricky because we would have to read the GitHub commit log, look for the latest
+        // "Merge from (root)" commit by "javafxports-github-bot", and then reset the upstream repo to the commit
+        // before that. If conflicts become a recurring problem this is something we can tackle later on.
 
         // Apply the hg patch to the upstream hg repo
         logger.debug("Fetching tip revision before import...");
