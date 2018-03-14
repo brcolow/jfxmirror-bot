@@ -12,6 +12,7 @@ repositories {
     }
     mavenCentral()
     maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
+    maven { url 'https://m2proxy.atlassian.com/repository/public' }
 }
 
 dependencies {
@@ -19,11 +20,15 @@ dependencies {
     compile group: 'org.glassfish.jersey.inject', name: 'jersey-hk2', version: '2.26'
     compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.9.4'
     compile group: 'com.fasterxml.jackson.jaxrs', name: 'jackson-jaxrs-json-provider', version: '2.9.4'
+
     // Releases past 0.6-SNAPSHOT are not in any public repository, so we copy the jar manually (ew).
-    // We also have to add the transitive dependencies for javahg.
+    // We also have to add the transitive dependencies (guava) for javahg.
     // Download bundle jar from: https://bitbucket.org/aragost/javahg/downloads/ and extract the javahg jar inside.
     compile group: 'com.aragost.javahg', name: 'javahg', version: '0.13'
     compile group: 'com.google.guava', name: 'guava', version: '18.0'
+
+    //compile group: 'com.atlassian.jira', name: 'jira-rest-java-client-core', version: '4.0.0'
+    compile group: 'com.atlassian.jira', name: 'jira-rest-java-client-api', version: '4.0.0'
     compile group: 'org.slf4j', name: 'slf4j-api', version: '1.8.0-beta1'
     compile group: 'org.slf4j', name: 'jul-to-slf4j', version: '1.8.0-beta1'
     compile group: 'org.python', name: 'jython-standalone', version: '2.7.0'

@@ -10,6 +10,7 @@ import static org.javafxports.jfxmirror.OcaStatus.SIGNED;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -60,10 +61,19 @@ import com.aragost.javahg.commands.ImportCommand;
 import com.aragost.javahg.commands.UpdateCommand;
 import com.aragost.javahg.commands.UpdateResult;
 import com.aragost.javahg.ext.mq.StripCommand;
+import com.atlassian.jira.rest.client.api.JiraRestClient;
+import com.atlassian.jira.rest.client.api.JiraRestClientFactory;
+import com.atlassian.jira.rest.client.api.domain.Issue;
+import com.atlassian.jira.rest.client.api.domain.SearchResult;
+import com.atlassian.jira.rest.client.auth.AnonymousAuthenticationHandler;
+import com.atlassian.jira.rest.client.internal.async.AsynchronousJiraRestClientFactory;
+import com.atlassian.util.concurrent.Promise;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 
 @Path("/")
 public class GhEventService {
@@ -554,7 +564,7 @@ public class GhEventService {
         // 2.) The PR title.
         // 3.) The branch name of this PR.
         logger.debug("Checking if this PR is associated with any JBS bugs...");
-        Set<String> jbsBugs = new HashSet<>();
+        Set<String> jbsBugsReferenced = new HashSet<>();
 
         // Check if any commit messages of this PR contain a JBS bug (like JDK-xxxxxxx).
         String commitsUrl = pullRequest.get("_links").get("commits").asText();
@@ -570,7 +580,7 @@ public class GhEventService {
                 String commitMessage = commitJson.get("commit").get("message").asText();
                 Matcher bugPatternMatcher = BUG_PATTERN.matcher(commitMessage);
                 if (bugPatternMatcher.find()) {
-                    jbsBugs.add(bugPatternMatcher.group(0));
+                    jbsBugsReferenced.add(bugPatternMatcher.group(0));
                 }
             }
         } catch (IOException e) {
@@ -584,21 +594,32 @@ public class GhEventService {
         String prBranchName = pullRequest.get("head").get("ref").asText();
         Matcher bugMatcher = BUG_PATTERN.matcher(prBranchName);
         if (bugMatcher.find()) {
-            jbsBugs.add(bugMatcher.group(0));
+            jbsBugsReferenced.add(bugMatcher.group(0));
         }
 
         // Check if the PR title contains a JBS bug.
         String prTitle = pullRequest.get("title").asText();
         bugMatcher = BUG_PATTERN.matcher(prTitle);
         if (bugMatcher.find()) {
-            jbsBugs.add(bugMatcher.group(0));
+            jbsBugsReferenced.add(bugMatcher.group(0));
         }
 
-        for (String jbsBug : jbsBugs) {
-            // Use JIRA rest client API to check that this bug exists, is open, and is for javafx component.
-
-            // Should we allow for multiple bugs per PR?
+        Set<String> foundJbsBugs = new HashSet<>();
+        // FIXME: Cache the client?
+        JiraRestClientFactory factory = new AsynchronousJiraRestClientFactory();
+        JiraRestClient jiraRestClient = factory.create(URI.create("https://bugs.openjdk.java.net"),
+                new AnonymousAuthenticationHandler());
+        // 11900 component?
+        for (String jbsBug : jbsBugsReferenced) {
+            Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
+                    "project = JDK AND status in (Open, In Progress, New, Provisional) AND component = javafx AND id = " + jbsBug);
+            Set<Issue> issues = Sets.newHashSet(searchJqlPromise.claim().getIssues());
+            if (!issues.isEmpty()) {
+                foundJbsBugs.add(jbsBug);
+            }
         }
+
+        Set<String> jbsBugsReferencedButNotFound = Sets.difference(jbsBugsReferenced, foundJbsBugs);
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
@@ -707,7 +728,8 @@ public class GhEventService {
         }
 
         // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus, jbsBugs);
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus,
+                jbsBugsReferenced, jbsBugsReferencedButNotFound);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
         } catch (IOException e) {
