@@ -96,6 +96,7 @@ public class GhEventService {
         if (ext.equalsIgnoreCase("zip")) {
             contentType = "application/zip";
         }
+        logger.debug("File: " + STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile());
         return Response.ok(STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile())
                 .header("Content-Type", contentType).build();
     }
@@ -110,7 +111,8 @@ public class GhEventService {
     @GET
     @Path("/pr/{path:.*}")
     public Response serveIndex(@PathParam("path") String path) {
-        return Response.ok(STATIC_BASE.resolve("pr").resolve(path).resolve("index.html").toFile()).build();
+        return Response.ok(STATIC_BASE.resolve("pr").resolve(path).resolve("index.html").toFile())
+                .header("Content-Type", "text/html").build();
     }
 
     /**
@@ -142,11 +144,13 @@ public class GhEventService {
             case "pull_request":
                 return handlePullRequest(event);
             default:
-                logger.debug("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\", " +
-                        "\"issue_comment\" but was: " + gitHubEvent);
-                logger.debug("Make sure that the only checked trigger events for the jfxmirror_bot webhook are \"Pull request\" and \"Issue comment\"");
+                logger.debug("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", " +
+                        "\"pull_request\", \"issue_comment\" but was: " + gitHubEvent);
+                logger.debug("Make sure that the only checked trigger events for the jfxmirror_bot webhook are " +
+                        "\"Pull request\" and \"Issue comment\"");
                 return Response.status(Response.Status.BAD_REQUEST).entity(new ObjectNode(JsonNodeFactory.instance)
-                        .put("error", "\"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\", \"issue_comment\" but was: " + gitHubEvent))
+                        .put("error", "\"X-GitHub-Event\" header was not one of \"ping\", \"pull_request\", " +
+                                "\"issue_comment\" but was: " + gitHubEvent))
                         .type(MediaType.APPLICATION_JSON_TYPE).build();
         }
     }
@@ -168,7 +172,8 @@ public class GhEventService {
 
         boolean commentOnPrWeCareAbout = false;
         OcaStatus ocaStatus = null;
-        File[] prDirs = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr").toFile().listFiles(File::isDirectory);
+        File[] prDirs = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr")
+                .toFile().listFiles(File::isDirectory);
         if (prDirs != null) {
             for (File prDir : prDirs) {
                 if (prDir.getName().equals(commentEvent.get("issue").get("number").asText())) {
@@ -221,7 +226,7 @@ public class GhEventService {
                 commentEvent.get("issue").get("number").asText(), ".oca");
 
         if (ocaStatus == FOUND_PENDING && comment.startsWith("Yes, that's me")) {
-            reply += "Okay, thanks. We won't ask again.";
+            reply += OcaReplies.replyWhenUserConfirmsIdentity();
             try {
                 Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
                 Files.write(ocaFile, (username + OCA_SEP + username + "\n").getBytes(UTF_8), APPEND);
@@ -239,9 +244,7 @@ public class GhEventService {
                 name = stripQuotes(matcher.group(0));
             } else {
                 // Malformed response, did not contain a name in quotes.
-                reply += "Sorry, we could not understand your response because we could not find a name in double quotes." +
-                        "Please try again by adding a comment to this PR of the form: " +
-                        "`@" + BOT_USERNAME + " I have signed the OCA under the name {name}`.";
+                reply += OcaReplies.replyWhenNotFoundNameInQuotes(BOT_USERNAME);
             }
 
             try {
@@ -260,16 +263,11 @@ public class GhEventService {
                 }
 
                 if (foundName) {
-                    reply += "Okay, thanks :thumbsup:. We have updated our records that you have signed the OCA " +
-                            "under the name `" + name + "`.";
+                    reply += OcaReplies.replyWhenFoundName(name);
                     Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
                     Files.write(ocaFile, (username + OCA_SEP + name + "\n").getBytes(UTF_8), APPEND);
                 } else {
-                    reply += "You said that you signed the OCA under your name `" + name + "`, but we weren't " +
-                            "able to find that name on the " +
-                            "[OCA signatures page](http://www.oracle.com/technetwork/community/oca-486395.html) :flushed:." +
-                            "Make sure it is correct and try again with the correct name by adding a comment to this " +
-                            "PR of the form: `@" + BOT_USERNAME + " I have signed the OCA under the name {name}`.";
+                    reply += OcaReplies.replyWhenNotFoundName(name, BOT_USERNAME);
                 }
             } catch (IOException e) {
                 logger.error("\u2718 Could not download OCA signatures page.");
@@ -293,16 +291,11 @@ public class GhEventService {
                 }
 
                 if (foundUsername) {
-                    reply += "Okay, thanks :thumbsup:. We have updated our records that you have signed the OCA " +
-                            "using your GitHub username.";
+                    reply += OcaReplies.replyWhenFoundUsername();
                     Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
                     Files.write(ocaFile, (username + OCA_SEP + username + "\n").getBytes(UTF_8), APPEND);
                 } else {
-                    reply += "You said that you signed the OCA under your GitHub username `" + username + "`, but we weren't " +
-                            "able to find that username on the " +
-                            "[OCA signatures page](http://www.oracle.com/technetwork/community/oca-486395.html) :flushed:." +
-                            "Make sure it is correct and try again with the correct name by adding a comment to this " +
-                            "PR of the form: `@" + BOT_USERNAME + " I have now signed the OCA using my GitHub username`.";
+                    reply += OcaReplies.replyWhenNotFoundUsername(username, BOT_USERNAME);
                 }
             } catch (IOException e) {
                 logger.error("\u2718 Could not download OCA signatures page.");
@@ -311,7 +304,7 @@ public class GhEventService {
             }
         } else {
             // Can't understand the response
-            reply += "Sorry, we could not understand your response :confused:.";
+            reply += OcaReplies.replyWhenCantUnderstandResponse();
         }
 
         Response commentResponse = Bot.httpClient.target(issueUrl)
@@ -359,10 +352,15 @@ public class GhEventService {
         setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...", null);
 
         // TODO: Because some files exist only in the downstream GitHub repository and not the upstream hg repository,
-        // we should exclude all changes to those files so that the patch applies cleanly.
+        // we should exclude all changes to those files so that the patch applies cleanly. We can probably make a
+        // black-list of files to exclude, which would include the README, .github, .ci, appveyor.yml, .travis.yml, etc.
+        // One way to do this would be to git checkout the HEAD of the pull request, perform a git reset --mixed,
+        // and only add unstaged files that are not in our blacklist (which includes the files mentioned before).
+        // Then we could re-commit, and use that for our git patch base.
 
         // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
-        // Currently we lose the commit messages of all but the first commit.
+        // Currently we lose the commit messages of all but the first commit. They are separated in the original
+        // patch file, like [1/3], [2/3], [3/3].
         String patchUrl = pullRequest.get("patch_url").asText();
         String hgPatch;
         try {
@@ -407,6 +405,7 @@ public class GhEventService {
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
             logger.debug("Updating upstream hg repository...");
+            // TODO: Could skip this by using `--bypass` argument?
             UpdateResult updateResult = UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
@@ -435,7 +434,8 @@ public class GhEventService {
                 String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
                 ocaStatus = OcaStatus.valueOf(ocaMarkerContents.toUpperCase(Locale.US));
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read OCA marker file.", tipBeforeImport);
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                        "Could not read OCA marker file.", tipBeforeImport);
                 logger.error("\u2718 Could not read OCA marker file: " + ocaMarkerFile);
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -511,9 +511,7 @@ public class GhEventService {
                     }
 
                     logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
-                    comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) and found " +
-                            "a signatory with your GitHub username: `" + ocaLine + "`. **If that's you**, add a comment on " +
-                            "this PR saying: `@" + BOT_USERNAME + " Yes, that's me`. **Otherwise, if that's not you**:\n\n";
+                    comment += OcaComments.commentWhenFoundUsername(ocaLine, BOT_USERNAME);
                 } else {
                     try {
                         Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
@@ -524,18 +522,9 @@ public class GhEventService {
                     }
                     // Post comment on PR telling them we could not find their github username listed on OCA signature page,
                     // ask them if they have signed it.
-                    comment += "We attempted to determine if you have signed the Oracle Contributor Agreement (OCA) but could " +
-                            "not find a signature line with your GitHub username.\n\n";
+                    comment += OcaComments.commentWhenNotFoundUsername();
                 }
-                comment += "**If you have already signed the OCA**:\n" +
-                        "Add a comment on this PR saying: `@" + BOT_USERNAME + " I have signed the OCA under the name {name}` " +
-                        "where `{name}` is the first, name-like part of an OCA signature line. For example, the signature line " +
-                        "`Michael Ennen - GlassFish Jersey - brcolow` has a first, name-like part of `Michael Ennen`.\n\n" +
-                        "**If you have never signed the OCA before:**\n" +
-                        "Follow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
-                        "doing so. Make sure to fill out the username portion of the form with your GitHub username. " +
-                        "Once you have signed the OCA and your name has been added to the list of signatures, " +
-                        "add a comment on this PR saying: `@" + BOT_USERNAME + " I have now signed the OCA using my GitHub username`.";
+                comment += OcaComments.defaultComment(BOT_USERNAME);
 
                 Response commentResponse = Bot.httpClient.target(commentsUrl)
                         .request()
@@ -544,8 +533,8 @@ public class GhEventService {
                         .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()));
 
                 if (commentResponse.getStatus() == 404) {
-                    logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who opened the " +
-                            "PR with confirming their signing of the OCA.");
+                    logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who " +
+                            "opened the PR with confirming their signing of the OCA.");
                     logger.debug("GitHub response: " + commentResponse.getEntity());
                     setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
                             "Could not post comment to PR.", tipBeforeImport);
@@ -557,11 +546,26 @@ public class GhEventService {
         // See if there is a JBS bug associated with this PR (how? commit message? rely on jcheck?)
         // http://openjdk.java.net/guide/producingChangeset.html#changesetComment states that the "changeset message"
         // should be of the form "<bugid>: <synopsis-of-symptom>" so we could grab it from that
+        logger.debug("Checking if this PR is associated with any JBS bugs...");
+        List<String> jbsBugs = new ArrayList<>();
         // Here's what JIRA does: https://confluence.atlassian.com/jirasoftwarecloud/referencing-issues-in-your-development-work-777002789.html
+        // JBS for JavaFX: https://bugs.openjdk.java.net/browse/JDK-8199498?jql=project%20%3D%20JDK%20AND%20component%20%3D%20javafx
+
+        // Overkill to use the JIRA REST API? That we we can at least determine if the JBS bug report we think this
+        // PR is for is open, is for the javafx "component", etc?
+        // https://developer.atlassian.com/server/jira/platform/rest-apis/#jira-rest-clients
+        // https://ecosystem.atlassian.net/wiki/spaces/JRJC/overview
+        // https://mvnrepository.com/artifact/com.atlassian.jira/jira-rest-java-client-api/4.0.0
+        // Example for above bug: https://bugs.openjdk.java.net/rest/api/latest/issue/JDK-8199498
+        // Here's one way to get all the commits for this PR:
+        // https://api.github.com/repos/javafxports/openjdk-jfx/pulls/{prNum}/commits?per_page=250
+        // This returns an array of commits. We want to grab every commit.message from it.
+        // We can then iterate over them, searching the messages for "JDK-12345678".
 
         // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
         logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
-        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "jcheck.txt");
+        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+                prNum, prShaHead, "jcheck.txt");
         try {
             Files.write(jcheckOutputPath, "".getBytes(), StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
@@ -640,12 +644,14 @@ public class GhEventService {
             Process webrev = webrevBuilder.start();
             boolean webrevFinished = webrev.waitFor(2, TimeUnit.MINUTES);
             if (!webrevFinished) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev in time.", tipBeforeImport);
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                        "Could not generate webrev in time.", tipBeforeImport);
                 logger.error("\u2718 Could not generate webrev in time.");
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         } catch (SecurityException | IOException | InterruptedException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not generate webrev for PR.", tipBeforeImport);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
+                    "Could not generate webrev for PR.", tipBeforeImport);
             logger.error("\u2718 Encountered error trying to generate webrev.");
             logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
@@ -663,7 +669,7 @@ public class GhEventService {
         }
 
         // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus);
+        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus, jbsBugs);
         try {
             Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
         } catch (IOException e) {
@@ -673,7 +679,8 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        // Rollback upstream hg repository back to tipBeforeImport
+        // Rollback upstream hg repository back to tipBeforeImport.
+        // TODO: Instead of doing this, we could create a temporary branch to work on before importing the GH PR.
         rollback(tipBeforeImport);
 
         // If we get this far, then we can set PR status to success.
@@ -734,7 +741,8 @@ public class GhEventService {
         }
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", status.toString().toLowerCase(US));
-        pendingStatus.put("target_url", Bot.BASE_URI.resolve("pr/" + prNum + "/" + prShaHead + "/index.html").toASCIIString());
+        pendingStatus.put("target_url", Bot.BASE_URI.resolve("pr/" + prNum + "/" + prShaHead + "/index.html")
+                .toASCIIString());
         pendingStatus.put("description", description);
         pendingStatus.put("context", BOT_USERNAME);
 
@@ -762,6 +770,9 @@ public class GhEventService {
         Session session = Session.getDefaultInstance(new Properties());
         MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(UTF_8)));
         Map<String, String> headers = enumToMap(emailMessage.getAllHeaders());
+        if (!headers.containsKey("From") || !headers.containsKey("Date")) {
+            throw new MessagingException("patch at url: " + patchUrl + " did not contain \"From\" and \"Date\" headers");
+        }
         return "# HG changeset patch\n" +
                 "# User " + headers.get("From") + "\n" +
                 "# Date " + headers.get("Date") + "\n\n" +

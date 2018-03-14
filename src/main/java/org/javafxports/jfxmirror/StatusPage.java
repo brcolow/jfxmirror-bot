@@ -1,7 +1,10 @@
 package org.javafxports.jfxmirror;
 
+import java.util.List;
+import java.util.stream.Collectors;
+
 public class StatusPage {
-    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus) {
+    public static String getStatusPageHtml(String prNum, String prShaHead, OcaStatus ocaStatus, List<String> jbsBugs) {
         return " <!DOCTYPE html>\n" +
                 "<html>\n" +
                 "  <head>\n" +
@@ -10,7 +13,9 @@ public class StatusPage {
                 "  </head>\n" +
                 "  <body>\n" +
                 "      <p>OCA: " + ocaStatus.getDescription() + "</p>" +
-                "      <p>JBS Bug: </p>" +
+                "      <p>JBS Bug(s): " + jbsBugs.stream().map(jbsBug ->
+                "<a href=\"https://bugs.openjdk.java.net/browse/" + jbsBug + ">" + jbsBug + "</a>").collect(
+                        Collectors.joining("|")) + "</p>" +
                 "      <p>Mercurial Patch: <a href=\"./patch/" + prNum + ".patch\">View</a></p>" +
                 "      <p>Webrev: <a href=\"./webrev/\">View</a> | <a href=\"./webrev.zip\">Download</a></p>" +
                 "      <p>jcheck: <a href=\"./jcheck.txt\">View</a></p>" +
