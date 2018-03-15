@@ -27,8 +27,8 @@ dependencies {
     compile group: 'com.aragost.javahg', name: 'javahg', version: '0.13'
     compile group: 'com.google.guava', name: 'guava', version: '18.0'
 
-    //compile group: 'com.atlassian.jira', name: 'jira-rest-java-client-core', version: '4.0.0'
-    compile group: 'com.atlassian.jira', name: 'jira-rest-java-client-api', version: '4.0.0'
+    compile group: 'com.atlassian.jira', name: 'jira-rest-java-client-core', version: '4.0.0'
+    compile group: 'com.atlassian.fugue', name: 'fugue', version: '2.6.1' // Required to instantiate a jira client
     compile group: 'org.slf4j', name: 'slf4j-api', version: '1.8.0-beta1'
     compile group: 'org.slf4j', name: 'jul-to-slf4j', version: '1.8.0-beta1'
     compile group: 'org.python', name: 'jython-standalone', version: '2.7.0'

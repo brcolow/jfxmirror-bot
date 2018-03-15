@@ -111,7 +111,6 @@ public class GhEventService {
         if (ext.equalsIgnoreCase("zip")) {
             contentType = "application/zip";
         }
-        logger.debug("File: " + STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile());
         return Response.ok(STATIC_BASE.resolve("pr").resolve(path + "." + ext).toFile())
                 .header("Content-Type", contentType).build();
     }
@@ -139,7 +138,6 @@ public class GhEventService {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public Response handleGhEvent(ObjectNode event, @Context ContainerRequestContext requestContext) {
-
         MultivaluedMap<String, String> headers = requestContext.getHeaders();
         if (!headers.containsKey("X-GitHub-Event") || headers.get("X-GitHub-Event").size() != 1) {
             logger.error("Got POST to /pr but request did not have \"X-GitHub-Event\" header");
@@ -157,7 +155,16 @@ public class GhEventService {
             case "issue_comment":
                 return handleComment(event);
             case "pull_request":
-                return handlePullRequest(event);
+                final String tipBeforeImport = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-1").execute();
+                // Make sure to always roll the hg repository back, otherwise handling subsequent PR events will break.
+                try {
+                    return handlePullRequest(event, tipBeforeImport);
+                } catch (Exception e) {
+                    logger.error("\u2718 Encountered unexpected exception while processing pull request.");
+                    logger.debug("exception: ", e);
+                    rollback(tipBeforeImport);
+                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                }
             default:
                 logger.debug("Got POST to /pr but \"X-GitHub-Event\" header was not one of \"ping\", " +
                         "\"pull_request\", \"issue_comment\" but was: " + gitHubEvent);
@@ -216,7 +223,6 @@ public class GhEventService {
                 }
             }
         }
-
 
         if (!commentOnPrWeCareAbout) {
             return Response.ok().build();
@@ -338,7 +344,7 @@ public class GhEventService {
     /**
      * https://developer.github.com/v3/activity/events/types/#pullrequestevent
      */
-    private Response handlePullRequest(ObjectNode pullRequestEvent) {
+    private Response handlePullRequest(ObjectNode pullRequestEvent, String tipBeforeImport) {
         String action = pullRequestEvent.get("action").asText();
 
         // "assigned", "unassigned", "review_requested", "review_request_removed", "labeled", "unlabeled", "opened",
@@ -418,7 +424,6 @@ public class GhEventService {
 
         // Apply the hg patch to the upstream hg repo
         logger.debug("Fetching tip revision before import...");
-        String tipBeforeImport = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-1").execute();
         logger.debug("Tip revision before import: " + tipBeforeImport);
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
@@ -572,7 +577,7 @@ public class GhEventService {
         Set<String> jbsBugsReferenced = new HashSet<>();
 
         // Check if any commit messages of this PR contain a JBS bug (like JDK-xxxxxxx).
-        String commitsUrl = pullRequest.get("_links").get("commits").asText();
+        String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
         Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
                 .request()
                 .header("Authorization", "token " + GH_ACCESS_TOKEN)
@@ -610,14 +615,13 @@ public class GhEventService {
         }
 
         Set<String> foundJbsBugs = new HashSet<>();
-        // FIXME: Cache the client?
+        // FIXME: Cache the client
         JiraRestClientFactory factory = new AsynchronousJiraRestClientFactory();
         JiraRestClient jiraRestClient = factory.create(URI.create("https://bugs.openjdk.java.net"),
                 new AnonymousAuthenticationHandler());
-        // 11900 component?
         for (String jbsBug : jbsBugsReferenced) {
             Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
-                    "project = JDK AND status in (Open, In Progress, New, Provisional) AND component = javafx AND id = " + jbsBug);
+                    "project = JDK AND status IN ('Open', 'In Progress', 'New', 'Provisional') AND component = javafx AND id = " + jbsBug);
             Set<Issue> issues = Sets.newHashSet(searchJqlPromise.claim().getIssues());
             if (!issues.isEmpty()) {
                 foundJbsBugs.add(jbsBug);

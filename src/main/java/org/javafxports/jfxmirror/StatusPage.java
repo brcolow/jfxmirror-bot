@@ -33,7 +33,7 @@ public class StatusPage {
         StringBuilder jbsHtmlBuilder = new StringBuilder();
         jbsHtmlBuilder.append("JBS Bugs referenced by PR:<br><br>");
         jbsHtmlBuilder.append(jbsBugsReferenced.stream().map(jbsBug ->
-                "<a href=\"https://bugs.openjdk.java.net/browse/" + jbsBug + ">" + jbsBug + "</a>").collect(
+                "<a href=\"https://bugs.openjdk.java.net/browse/" + jbsBug + "\">" + jbsBug + "</a>").collect(
                 Collectors.joining("|")));
 
         if (!jbsBugsReferencedButNotFound.isEmpty()) {

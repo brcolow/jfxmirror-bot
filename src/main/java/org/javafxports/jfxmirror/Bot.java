@@ -43,8 +43,9 @@ public class Bot {
     private static final Path UPSTREAM_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
     private static final Logger logger = LoggerFactory.getLogger(Bot.class);
 
-    public static void main(String[] args) {
+    private Bot() {}
 
+    public static void main(String[] args) {
         if (System.getenv("jfxmirror_gh_token") == null) {
             logger.error("\u2718 \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
             logger.debug("This must be set to your personal access token created for jfxmirror_bot.");
