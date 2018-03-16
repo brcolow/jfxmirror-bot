@@ -376,7 +376,7 @@ public class GhEventService {
         // black-list of files to exclude, which would include the README, .github, .ci, appveyor.yml, .travis.yml, etc.
         // One way to do this would be to git checkout the HEAD of the pull request, perform a git reset --mixed,
         // and only add back the unstaged files that are not in our blacklist (which includes the files mentioned before).
-        // Then we could re-commit, and use that for our git patch base.
+        // Then we could re-commit, and use that for our git format-patch base.
 
         // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
         // Currently we lose the commit messages of all but the first commit. They are separated in the original
@@ -421,6 +421,7 @@ public class GhEventService {
         // into account is kind of tricky because we would have to read the GitHub commit log, look for the latest
         // "Merge from (root)" commit by "javafxports-github-bot", and then reset the upstream repo to the commit
         // before that. If conflicts become a recurring problem this is something we can tackle later on.
+        // FIXME: Actually no, we need to tackle this because as it stands the upstream hg repository is never updated!
 
         // Apply the hg patch to the upstream hg repo
         logger.debug("Fetching tip revision before import...");
