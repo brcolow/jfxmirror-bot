@@ -1,5 +1,8 @@
 package org.javafxports.jfxmirror;
 
+import static java.io.File.separatorChar;
+
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -11,6 +14,12 @@ import java.nio.file.Paths;
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
 
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.lib.RepositoryCache;
+import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
+import org.eclipse.jgit.util.FS;
 import org.glassfish.grizzly.http.server.HttpServer;
 import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
 import org.glassfish.jersey.logging.LoggingFeature;
@@ -34,6 +43,7 @@ import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
 public class Bot {
     protected static Client httpClient;
     protected static Repository upstreamRepo;
+    protected static org.eclipse.jgit.lib.Repository mirrorRepo;
     private static HttpServer httpServer;
     protected static final URI BASE_URI = URI.create("http://localhost:8433/");
     private static final String JCHECK_URL = "http://cr.openjdk.java.net/~kcr/jcheck/bin/jcheck.py";
@@ -41,6 +51,8 @@ public class Bot {
     private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";
     private static final String UPSTREAM_REPO_URL = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
     private static final Path UPSTREAM_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
+    private static final String MIRROR_REPO_URL = "https://github.com/javafxports/openjdk-jfx";
+    private static final Path MIRROR_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "mirror");
     private static final Logger logger = LoggerFactory.getLogger(Bot.class);
 
     private Bot() {}
@@ -60,27 +72,45 @@ public class Bot {
         // is more complicated than just using a personal access token). So the user will only be notified that their
         // github access token is invalid when a PR event comes in.
 
-        logger.debug("Checking for \"jcheck.py\"...");
-        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
-        if (!Files.exists(jcheckPath)) {
-            logger.debug("Downloading \"jcheck.py\"...");
-            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
-                Files.copy(in, jcheckPath);
-                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
-            } catch (IOException e) {
-                logger.error("\u2718 Could not download \"jcheck.py\".");
+        if (!Files.exists(UPSTREAM_REPO_PATH)) {
+            try {
+                // Probably the first time running, clone the git mirror repository.
+                logger.debug("Git mirror repository not found.");
+                logger.debug("Cloning git mirror repository...");
+                logger.debug("This may take a while (like 20 or more minutes) as the mirror repository is large.");
+                Git git = Git.cloneRepository()
+                        .setURI(MIRROR_REPO_URL)
+                        .setDirectory(MIRROR_REPO_PATH.toFile())
+                        .call();
+                logger.debug("Cloned git mirror repository: " + MIRROR_REPO_PATH);
+                git.close();
+            } catch (GitAPIException e) {
+                logger.error("\u2718 Could not clone javafxports git mirror repository.");
                 logger.debug("exception: ", e);
                 System.exit(1);
             }
-        } else {
-            logger.info("\u2713 Found \"jcheck.py\".");
         }
+
+        try {
+            mirrorRepo = new FileRepositoryBuilder()
+                    .setGitDir(MIRROR_REPO_PATH.resolve(".git").toFile())
+                    .readEnvironment()
+                    .build();
+            Ref head = mirrorRepo.exactRef("refs/heads/master");
+            logger.debug("git head: " + head);
+        } catch (IOException e) {
+            logger.error("\u2718 Could not initialize javafxports git mirror repository.");
+            logger.debug("exception: ", e);
+            System.exit(1);
+        }
+
+        logger.debug("Initialized git mirror repository: " + mirrorRepo.getDirectory());
 
         RepositoryConfiguration repoConf = new RepositoryConfiguration();
         repoConf.addExtension(JCheckExtension.class);
         if (!Files.exists(UPSTREAM_REPO_PATH)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
-            logger.debug("Upstream mercurial repository directory not found.");
+            logger.debug("Upstream mercurial repository not found.");
             try {
                 Files.createDirectories(UPSTREAM_REPO_PATH);
                 logger.info("\u2713 Created: " + UPSTREAM_REPO_PATH);
@@ -110,6 +140,22 @@ public class Bot {
                 logger.debug("exception: ", e);
                 System.exit(1);
             }
+        }
+
+        logger.debug("Checking for \"jcheck.py\"...");
+        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
+        if (!Files.exists(jcheckPath)) {
+            logger.debug("Downloading \"jcheck.py\"...");
+            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
+                Files.copy(in, jcheckPath);
+                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download \"jcheck.py\".");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+        } else {
+            logger.info("\u2713 Found \"jcheck.py\".");
         }
 
         Path jcheckConfPath = Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck").resolve("conf");
@@ -211,6 +257,7 @@ public class Bot {
     }
 
     protected static void cleanup() {
+        mirrorRepo.close();
         upstreamRepo.close();
         if (httpServer.isStarted()) {
             logger.debug("Stopping HTTP server...");

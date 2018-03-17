@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -47,6 +48,12 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
 
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.errors.AmbiguousObjectException;
+import org.eclipse.jgit.errors.IncorrectObjectTypeException;
+import org.eclipse.jgit.revwalk.RevCommit;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -163,6 +170,7 @@ public class GhEventService {
                     logger.error("\u2718 Encountered unexpected exception while processing pull request.");
                     logger.debug("exception: ", e);
                     rollback(tipBeforeImport);
+                    resetGitRepo();
                     return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
                 }
             default:
@@ -422,6 +430,65 @@ public class GhEventService {
         // "Merge from (root)" commit by "javafxports-github-bot", and then reset the upstream repo to the commit
         // before that. If conflicts become a recurring problem this is something we can tackle later on.
         // FIXME: Actually no, we need to tackle this because as it stands the upstream hg repository is never updated!
+        // List<RevCommit> lastNCommits = new ArrayList<>();
+
+        // Find the most recent merge commit from "javafxports-github-bot" so that we can use it to sync the upstream
+        // hg repository so that the exported git patch and imported hg patch are referencing the same repository state.
+
+        Git git = new Git(Bot.mirrorRepo);
+        RevCommit latestMergeCommit = null;
+
+        try {
+            Iterable<RevCommit> commits = git.log().all().call();
+            for (RevCommit commit : commits) {
+                if (commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
+                        commit.getShortMessage().equalsIgnoreCase("Merge from (root)")) {
+                    latestMergeCommit = commit;
+                    break;
+                }
+            }
+        } catch (IOException | GitAPIException e) {
+            e.printStackTrace();
+        }
+
+        if (latestMergeCommit == null) {
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not find previous merge commit.", null);
+            logger.error("\u2718 Could not find previous merge commit.");
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        logger.info("\u2713 Found latest merge commit: " + Arrays.toString(latestMergeCommit.getParents()));
+        RevCommit mostRecentUpstreamCommit = null;
+        for (RevCommit commit : latestMergeCommit.getParents()) {
+            if (!commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
+                    !commit.getShortMessage().contains("Merge")) {
+                mostRecentUpstreamCommit = commit;
+                break;
+            }
+        }
+
+        if (mostRecentUpstreamCommit == null) {
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not determine latest upstream commit in mirror.", null);
+            logger.error("\u2718 Could not determine latest upstream commit in mirror.");
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        // At this point we know that "mostRecentUpsteamCommit" is the latest commit from upstream to be merged into
+        // the git mirror repository. Thus we use that for our head for constructing the git patch. But first we
+        // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
+        // on upstream).
+        try {
+            git.checkout().setStartPoint(mostRecentUpstreamCommit).call();
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD~1").getName()).call();
+            // for each file in black list:
+            //    git reset HEAD path/to/unwanted_file
+            // endfor
+            // git commit -c ORIG_HEAD
+        } catch (GitAPIException | IOException e) {
+            e.printStackTrace();
+        }
+
+        System.exit(0);
 
         // Apply the hg patch to the upstream hg repo
         logger.debug("Fetching tip revision before import...");
@@ -431,7 +498,7 @@ public class GhEventService {
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
             logger.debug("Updating upstream hg repository...");
-            // TODO: Could skip this by using `--bypass` argument?
+            // TODO: Could skip this by using `--bypass` argument to importCommand?
             UpdateResult updateResult = UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
@@ -774,6 +841,17 @@ public class GhEventService {
             }
         }
 
+    }
+
+    private static void resetGitRepo() {
+        logger.debug("Reseting git repository to \"origin/master\"...");
+
+        Git git = new Git(Bot.mirrorRepo);
+        try {
+            git.reset().setMode(ResetCommand.ResetType.HARD).setRef("refs/remotes/origin/master").call();
+        } catch (GitAPIException e) {
+            logger.debug("exception: ", e);
+        }
     }
     /**
      * Fetches, extracts, and then returns the OCA signatures from Oracle's website.

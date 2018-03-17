@@ -20,6 +20,7 @@ dependencies {
     compile group: 'org.glassfish.jersey.inject', name: 'jersey-hk2', version: '2.26'
     compile group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version: '2.9.4'
     compile group: 'com.fasterxml.jackson.jaxrs', name: 'jackson-jaxrs-json-provider', version: '2.9.4'
+    compile group: 'org.eclipse.jgit', name: 'org.eclipse.jgit', version: '4.11.0.201803080745-r'
 
     // Releases past 0.6-SNAPSHOT are not in any public repository, so we copy the jar manually (ew).
     // We also have to add the transitive dependencies (guava) for javahg.
