@@ -50,6 +50,7 @@ import javax.ws.rs.core.Response;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.AmbiguousObjectException;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
@@ -478,16 +479,34 @@ public class GhEventService {
         // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
         // on upstream).
         try {
-            git.checkout().setStartPoint(mostRecentUpstreamCommit).call();
-            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD~1").getName()).call();
-            // for each file in black list:
-            //    git reset HEAD path/to/unwanted_file
-            // endfor
-            // git commit -c ORIG_HEAD
+            // checkout pull request
+            git.fetch().setRefSpecs("refs/pull/" + prNum + "/head:pr-" + prNum).call();
+
+            // Squash all commits into 1 ... then:
+            RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^").getName()).call();
+            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".travis.yml").call();
+            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("appveyor.yml").call();
+            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".github/**").call();
+            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".ci/**").call();
+
+            try {
+               git.commit().setMessage(latestCommitOfPr.getFullMessage())
+                       .setAuthor(latestCommitOfPr.getAuthorIdent())
+                       .setAllowEmpty(false).call();
+            } catch (EmtpyCommitException e) {
+                // If the commit is empty that means this PR only touches blacklisted files, so it has no intention
+                // of being merged to upstream, so we can stop now.
+                setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl,
+                        "PR has no changes meant for upstream.", tipBeforeImport);
+                return Response.ok().build();
+            }
         } catch (GitAPIException | IOException e) {
             e.printStackTrace();
         }
 
+        // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
+        // a patch between "mostRecentUpstreamCommit" and the one-commit PR.
         System.exit(0);
 
         // Apply the hg patch to the upstream hg repo
