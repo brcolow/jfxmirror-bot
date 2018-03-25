@@ -52,9 +52,6 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.errors.AmbiguousObjectException;
-import org.eclipse.jgit.errors.IncorrectObjectTypeException;
-import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -525,7 +522,7 @@ public class GhEventService {
         }
 
         // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
-        // a patch between "mostRecentUpstreamCommit" and the one-commit PR.
+        // a patch between "mostRecentUpstreamCommit" and the one-commit PR (using git-format patch).
         System.exit(0);
 
         // Apply the hg patch to the upstream hg repo
