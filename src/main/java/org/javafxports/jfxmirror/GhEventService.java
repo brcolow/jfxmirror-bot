@@ -464,11 +464,12 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        logger.info("\u2713 Found latest merge commit: " + Arrays.toString(latestMergeCommit.getParents()));
         RevCommit mostRecentUpstreamCommit = null;
         for (RevCommit commit : latestMergeCommit.getParents()) {
             if (!commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
-                    !commit.getShortMessage().contains("Merge")) {
+                    !commit.getShortMessage().contains("Merge from (root)")) {
+                logger.info("\u2713 Found latest merge commit by " + commit.getAuthorIdent().getName() +
+                        ": \"" + commit.getShortMessage() + "\" (" + commit.getName() + ")");
                 mostRecentUpstreamCommit = commit;
                 break;
             }
@@ -506,23 +507,25 @@ public class GhEventService {
         // on upstream).
         try {
             // Fetch and checkout pull request.
-            String requestBranch = pullRequest.get("head").get("ref").asText();
+            // String requestBranch = pullRequest.get("head").get("ref").asText();
             git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
-                    "refs/heads/" + requestBranch + ":refs/pull/" + prNum + "/head")).call();
-            git.checkout().setName(requestBranch).call();
+                    "refs/pull/" + prNum + "/head:refs/heads/" + "pr-" + prShaHead)).call();
+            git.checkout().setName("pr-" + prShaHead).call();
             RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
 
             // Squash all commits in the PR to one (concatenate commit messages).
+            // FIXME: This is not working, it is actually taking all changes from the PR commit to the most recent
+            // upstream commit (including changes in-between! I think what we *actually* want to do is rebase on to
+            // mostRecentUpstreamCommit.
             git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(
                     Bot.mirrorRepo.resolve(mostRecentUpstreamCommit.getName()).getName()).call();
 
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".travis.yml").call();
-            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("README.md").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("appveyor.yml").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".github/**").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".ci/**").call();
 
-            git.checkout().setCreateBranch(true).setName("pr-" + latestCommitOfPr.getName()).call();
+            git.checkout().setCreateBranch(true).setName("pr-" + latestCommitOfPr.getName() + "-squashed").call();
             try {
                git.commit().setMessage(commitMessagesConcat.toString())
                        .setAuthor(latestCommitOfPr.getAuthorIdent())
