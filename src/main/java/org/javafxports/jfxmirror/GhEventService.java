@@ -52,10 +52,15 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.transport.RefSpec;
+import org.eclipse.jgit.treewalk.AbstractTreeIterator;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -475,40 +480,53 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
+        String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
+        Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
+                .request()
+                .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                .accept(GH_ACCEPT)
+                .get();
+        JsonNode commitsJson;
+        try {
+            commitsJson = new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
+        } catch (IOException e) {
+            logger.error("\u2718 Could not read commits JSON.");
+            logger.debug("exception: ", e);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read commits JSON.", tipBeforeImport);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        StringBuilder commitMessagesConcat = new StringBuilder();
+        for (JsonNode commitJson : commitsJson) {
+            commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
+        }
         // At this point we know that "mostRecentUpsteamCommit" is the latest commit from upstream to be merged into
         // the git mirror repository. Thus we use that for our head for constructing the git patch. But first we
         // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
         // on upstream).
         try {
-            // Fetch/ checkout pull request.
+            // Fetch and checkout pull request.
             String requestBranch = pullRequest.get("head").get("ref").asText();
             git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
                     "refs/heads/" + requestBranch + ":refs/pull/" + prNum + "/head")).call();
             git.checkout().setName(requestBranch).call();
-            Ref head = Bot.mirrorRepo.exactRef("refs/heads/master");
-            RevWalk walk = new RevWalk(Bot.mirrorRepo);
-            RevCommit commit = walk.parseCommit(head.getObjectId());
-            walk.markStart(commit);
-            int count = 0;
-            for (RevCommit rev : walk) {
-                logger.debug("Commit: " + rev.getShortMessage());
-                count++;
-            }
-
-            walk.dispose();
-
-            // Squash all commits into 1 ... then:
             RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
-            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^").getName()).call();
+
+            // Squash all commits in the PR to one (concatenate commit messages).
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(
+                    Bot.mirrorRepo.resolve(mostRecentUpstreamCommit.getName()).getName()).call();
+
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".travis.yml").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("README.md").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("appveyor.yml").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".github/**").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".ci/**").call();
 
+            git.checkout().setCreateBranch(true).setName("pr-" + latestCommitOfPr.getName()).call();
             try {
-               git.commit().setMessage(latestCommitOfPr.getFullMessage())
+               git.commit().setMessage(commitMessagesConcat.toString())
                        .setAuthor(latestCommitOfPr.getAuthorIdent())
+                       .setCommitter(latestCommitOfPr.getCommitterIdent())
                        .setAllowEmpty(false).call();
             } catch (EmtpyCommitException e) {
                 // If the commit is empty that means this PR only touches blacklisted files, so it has no intention
@@ -517,12 +535,44 @@ public class GhEventService {
                         "PR has no changes meant for upstream.", tipBeforeImport);
                 return Response.ok().build();
             }
+
+
+            // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
+            // a patch between "mostRecentUpstreamCommit" and the one-commit PR. This should be accomplished by diffing
+            // between head of master and head of pr-{sha}
+            CanonicalTreeParser prTreeParser;
+            CanonicalTreeParser masterTreeParser;
+            Ref prHead = Bot.mirrorRepo.exactRef("refs/heads/pr-" + latestCommitOfPr.getName());
+            Ref masterHead = Bot.mirrorRepo.exactRef("refs/heads/master");
+            try (RevWalk walk = new RevWalk(Bot.mirrorRepo)) {
+                RevCommit prCommit = walk.parseCommit(prHead.getObjectId());
+                RevTree prTree = walk.parseTree(prCommit.getTree().getId());
+                CanonicalTreeParser treeParser = new CanonicalTreeParser();
+                try (ObjectReader reader = Bot.mirrorRepo.newObjectReader()) {
+                    treeParser.reset(reader, prTree.getId());
+                }
+                prTreeParser = treeParser;
+
+                RevCommit masterCommit = walk.parseCommit(masterHead.getObjectId());
+                RevTree masterTree = walk.parseTree(masterCommit.getTree().getId());
+                treeParser = new CanonicalTreeParser();
+                try (ObjectReader reader = Bot.mirrorRepo.newObjectReader()) {
+                    treeParser.reset(reader, masterTree.getId());
+                }
+                masterTreeParser = treeParser;
+                walk.dispose();
+            }
+            List<DiffEntry> diff = git.diff().setOldTree(masterTreeParser).setNewTree(prTreeParser).call();
+            for (DiffEntry entry : diff) {
+                logger.debug("Diff: " + entry);
+            }
         } catch (GitAPIException | IOException e) {
-            e.printStackTrace();
+            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
+                    "Could not setup upstream equivalent commit.", tipBeforeImport);
+            logger.error("\u2718 Could not setup upstream equivalent commit.");
+            logger.debug("exception: ", e);
         }
 
-        // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
-        // a patch between "mostRecentUpstreamCommit" and the one-commit PR (using git-format patch).
         System.exit(0);
 
         // Apply the hg patch to the upstream hg repo
@@ -680,27 +730,12 @@ public class GhEventService {
         Set<String> jbsBugsReferenced = new HashSet<>();
 
         // Check if any commit messages of this PR contain a JBS bug (like JDK-xxxxxxx).
-        String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
-        Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
-                .request()
-                .header("Authorization", "token " + GH_ACCESS_TOKEN)
-                .accept(GH_ACCEPT)
-                .get();
-
-        try {
-            JsonNode commitsJson = new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
-            for (JsonNode commitJson : commitsJson) {
-                String commitMessage = commitJson.get("commit").get("message").asText();
-                Matcher bugPatternMatcher = BUG_PATTERN.matcher(commitMessage);
-                if (bugPatternMatcher.find()) {
-                    jbsBugsReferenced.add(bugPatternMatcher.group(0));
-                }
+        for (JsonNode commitJson : commitsJson) {
+            String commitMessage = commitJson.get("commit").get("message").asText();
+            Matcher bugPatternMatcher = BUG_PATTERN.matcher(commitMessage);
+            if (bugPatternMatcher.find()) {
+                jbsBugsReferenced.add(bugPatternMatcher.group(0));
             }
-        } catch (IOException e) {
-            logger.error("\u2718 Could not read commits JSON.");
-            logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read commits JSON.", tipBeforeImport);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         // Check if the branch name of the PR contains a JBS bug.
