@@ -54,7 +54,11 @@ import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.AmbiguousObjectException;
 import org.eclipse.jgit.errors.IncorrectObjectTypeException;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.RefSpec;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -479,13 +483,28 @@ public class GhEventService {
         // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
         // on upstream).
         try {
-            // checkout pull request
-            git.fetch().setRefSpecs("refs/pull/" + prNum + "/head:pr-" + prNum).call();
+            // Fetch/ checkout pull request.
+            String requestBranch = pullRequest.get("head").get("ref").asText();
+            git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
+                    "refs/heads/" + requestBranch + ":refs/pull/" + prNum + "/head")).call();
+            git.checkout().setName(requestBranch).call();
+            Ref head = Bot.mirrorRepo.exactRef("refs/heads/master");
+            RevWalk walk = new RevWalk(Bot.mirrorRepo);
+            RevCommit commit = walk.parseCommit(head.getObjectId());
+            walk.markStart(commit);
+            int count = 0;
+            for (RevCommit rev : walk) {
+                logger.debug("Commit: " + rev.getShortMessage());
+                count++;
+            }
+
+            walk.dispose();
 
             // Squash all commits into 1 ... then:
             RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
             git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^").getName()).call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".travis.yml").call();
+            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("README.md").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("appveyor.yml").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".github/**").call();
             git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".ci/**").call();
