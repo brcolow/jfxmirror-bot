@@ -10,12 +10,16 @@ import static org.javafxports.jfxmirror.OcaStatus.SIGNED;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.net.URI;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -24,7 +28,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -49,13 +52,10 @@ import javax.ws.rs.core.Response;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
-import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectReader;
-import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -386,28 +386,7 @@ public class GhEventService {
         // Set the status of the PR to pending while we do the necessary checks.
         setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...", null);
 
-        // TODO: Because some files exist only in the downstream GitHub repository and not the upstream hg repository,
-        // we should exclude all changes to those files so that the patch applies cleanly. We can probably make a
-        // black-list of files to exclude, which would include the README, .github, .ci, appveyor.yml, .travis.yml, etc.
-        // One way to do this would be to git checkout the HEAD of the pull request, perform a git reset --mixed,
-        // and only add back the unstaged files that are not in our blacklist (which includes the files mentioned before).
-        // Then we could re-commit, and use that for our git format-patch base.
-
-        // TODO: Before converting the PR patch, should it be squashed to one commit of concatenated commit messages?
-        // Currently we lose the commit messages of all but the first commit. They are separated in the original
-        // patch file, like [1/3], [2/3], [3/3].
-        String patchUrl = pullRequest.get("patch_url").asText();
-        String hgPatch;
-        try {
-            hgPatch = convertGitPatchToHgPatch(patchUrl);
-        } catch (IOException | MessagingException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not convert git patch to hg patch.", null);
-            logger.error("\u2718 Encountered error trying to convert git patch to hg patch.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }
-
-        String patchFilename = patchUrl.substring(patchUrl.lastIndexOf('/') + 1);
+        // Create directory that will contain the git and hg patches.
         java.nio.file.Path patchDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "patch");
         if (!Files.exists(patchDir)) {
             try {
@@ -420,28 +399,8 @@ public class GhEventService {
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
-        java.nio.file.Path hgPatchPath = patchDir.resolve(patchFilename);
-        try {
-            logger.debug("Writing hg patch: " + hgPatchPath);
-            Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
-        } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.", null);
-            logger.error("\u2718 Could not write hg patch to file.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }
-
-        // TODO: Technically we don't want to import the hg patch with the upstream repository at the latest commit
-        // but instead want it to be at the latest commit that has been mirrored to the GitHub repository. To take this
-        // into account is kind of tricky because we would have to read the GitHub commit log, look for the latest
-        // "Merge from (root)" commit by "javafxports-github-bot", and then reset the upstream repo to the commit
-        // before that. If conflicts become a recurring problem this is something we can tackle later on.
-        // FIXME: Actually no, we need to tackle this because as it stands the upstream hg repository is never updated!
-        // List<RevCommit> lastNCommits = new ArrayList<>();
-
         // Find the most recent merge commit from "javafxports-github-bot" so that we can use it to sync the upstream
         // hg repository so that the exported git patch and imported hg patch are referencing the same repository state.
-
         Git git = new Git(Bot.mirrorRepo);
         RevCommit latestMergeCommit = null;
 
@@ -518,22 +477,12 @@ public class GhEventService {
             git.reset().setRef(Constants.HEAD).addPath(".travis.yml").addPath("appveyor.yml")
                     .addPath(".github/README.md").addPath(".github/CONTRIBUTING.md").addPath(".ci/before_install.sh")
                     .addPath(".ci/script.sh").call();
-
-            logger.debug("Git status after removing blacklisted files:");
-            Status status = git.status().call();
-            logger.debug("Added: " + status.getAdded());
-            logger.debug("Changed: " + status.getChanged());
-            logger.debug("Modified: " + status.getModified());
-            logger.debug("Untracked: " + status.getUntracked());
-            logger.debug("Removed: " + status.getRemoved());
-            logger.debug("Uncommited changes: " + status.getUncommittedChanges());
+            RevCommit squashedCommit;
             try {
-                logger.debug("Committing...");
-                RevCommit commit = git.commit().setMessage(commitMessagesConcat.toString())
+                squashedCommit = git.commit().setMessage(commitMessagesConcat.toString())
                         .setAuthor(latestCommitOfPr.getAuthorIdent())
                         .setCommitter(latestCommitOfPr.getCommitterIdent())
                         .setAllowEmpty(false).call();
-                logger.debug("Commit: " + commit);
             } catch (EmtpyCommitException e) {
                 // If the commit is empty that means this PR only touches blacklisted files, so it has no intention
                 // of being merged to upstream, so we can stop now.
@@ -543,17 +492,14 @@ public class GhEventService {
                 return Response.ok().build();
             }
 
-
             // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
             // a patch between "mostRecentUpstreamCommit" and the one-commit PR. This should be accomplished by diffing
-            // between head of master and head of pr-{sha}-squashed - It shouldn't require all the craziness below,
-            // we should be able to get the diff of a single commit more easily.
+            // between HEAD and HEAD^1- It shouldn't require all the craziness below, we should be able to get the diff
+            // of a single commit more easily.
             CanonicalTreeParser prTreeParser;
             CanonicalTreeParser masterTreeParser;
-            Ref prHead = Bot.mirrorRepo.exactRef("refs/heads/pr-" + latestCommitOfPr.getName());
-            Ref masterHead = Bot.mirrorRepo.exactRef("refs/heads/master");
             try (RevWalk walk = new RevWalk(Bot.mirrorRepo)) {
-                RevCommit prCommit = walk.parseCommit(prHead.getObjectId());
+                RevCommit prCommit = walk.parseCommit(squashedCommit.getId());
                 RevTree prTree = walk.parseTree(prCommit.getTree().getId());
                 CanonicalTreeParser treeParser = new CanonicalTreeParser();
                 try (ObjectReader reader = Bot.mirrorRepo.newObjectReader()) {
@@ -561,7 +507,7 @@ public class GhEventService {
                 }
                 prTreeParser = treeParser;
 
-                RevCommit masterCommit = walk.parseCommit(masterHead.getObjectId());
+                RevCommit masterCommit = walk.parseCommit(latestMergeCommit.getId());
                 RevTree masterTree = walk.parseTree(masterCommit.getTree().getId());
                 treeParser = new CanonicalTreeParser();
                 try (ObjectReader reader = Bot.mirrorRepo.newObjectReader()) {
@@ -570,10 +516,19 @@ public class GhEventService {
                 masterTreeParser = treeParser;
                 walk.dispose();
             }
-            List<DiffEntry> diff = git.diff().setOldTree(masterTreeParser).setNewTree(prTreeParser).call();
-            for (DiffEntry entry : diff) {
-                logger.debug("Diff: " + entry);
-            }
+
+            // Write the diff to a file, imitating "git format-patch" style.
+            OutputStreamWriter diffWriter = new OutputStreamWriter(Files.newOutputStream(
+                    patchDir.resolve("git.patch"), StandardOpenOption.CREATE), StandardCharsets.UTF_8);
+            diffWriter.write("From 3dc8d871836e529a31f93d514b9845dab0f52926 Mon Sep 17 00:00:00 2001\n" +
+                    "From: " + latestCommitOfPr.getAuthorIdent().getName() + " <" + latestCommitOfPr.getAuthorIdent().getEmailAddress() +">\n" +
+                    "Date: " + DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.ofInstant(Instant.ofEpochSecond(latestCommitOfPr.getCommitTime()),
+                    ZoneId.of("GMT"))) + "\n" +
+                    "Subject: [PATCH] " + commitMessagesConcat.toString().split("\n")[0] + "\n\n");
+            diffWriter.close();
+            git.diff().setOldTree(masterTreeParser).setNewTree(prTreeParser).setOutputStream(
+                    Files.newOutputStream(patchDir.resolve("git.patch"), StandardOpenOption.APPEND)).call();
+
         } catch (GitAPIException | IOException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
                     "Could not setup upstream equivalent commit.", tipBeforeImport);
@@ -581,7 +536,30 @@ public class GhEventService {
             logger.debug("exception: ", e);
         }
 
-        System.exit(0);
+        String hgPatch;
+        try {
+            hgPatch = convertGitPatchToHgPatch(patchDir.resolve("git.patch"));
+        } catch (IOException | MessagingException e) {
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not convert git patch to hg patch.", null);
+            logger.error("\u2718 Encountered error trying to convert git patch to hg patch.");
+            logger.debug("exception: ", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        java.nio.file.Path hgPatchPath = patchDir.resolve("hg.patch");
+        try {
+            logger.debug("Writing hg patch: " + hgPatchPath);
+            Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
+        } catch (IOException e) {
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.", null);
+            logger.error("\u2718 Could not write hg patch to file.");
+            logger.debug("exception: ", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        if (true) {
+            return Response.ok().build();
+        }
 
         // Apply the hg patch to the upstream hg repo
         logger.debug("Fetching tip revision before import...");
@@ -991,13 +969,13 @@ public class GhEventService {
      * <p>
      * Based on https://github.com/mozilla/moz-git-tools/blob/master/git-patch-to-hg-patch
      */
-    private static String convertGitPatchToHgPatch(String patchUrl) throws IOException, MessagingException {
-        String gitPatch = new Scanner(new URL(patchUrl).openStream(), "UTF-8").useDelimiter("\\A").next();
+    private static String convertGitPatchToHgPatch(java.nio.file.Path gitPatchPath) throws IOException, MessagingException {
+        String gitPatch = new String(Files.readAllBytes(gitPatchPath), StandardCharsets.UTF_8);
         Session session = Session.getDefaultInstance(new Properties());
         MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(UTF_8)));
         Map<String, String> headers = enumToMap(emailMessage.getAllHeaders());
         if (!headers.containsKey("From") || !headers.containsKey("Date")) {
-            throw new MessagingException("patch at url: " + patchUrl + " did not contain \"From\" and \"Date\" headers");
+            throw new MessagingException("patch (" + gitPatchPath + ") did not contain \"From\" and \"Date\" headers");
         }
         return "# HG changeset patch\n" +
                 "# User " + headers.get("From") + "\n" +
