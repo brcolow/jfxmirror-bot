@@ -17,7 +17,6 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -50,16 +49,17 @@ import javax.ws.rs.core.Response;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.transport.RefSpec;
-import org.eclipse.jgit.treewalk.AbstractTreeIterator;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -507,33 +507,37 @@ public class GhEventService {
         // on upstream).
         try {
             // Fetch and checkout pull request.
-            // String requestBranch = pullRequest.get("head").get("ref").asText();
             git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
                     "refs/pull/" + prNum + "/head:refs/heads/" + "pr-" + prShaHead)).call();
             git.checkout().setName("pr-" + prShaHead).call();
             RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
 
             // Squash all commits in the PR to one (concatenate commit messages).
-            // FIXME: This is not working, it is actually taking all changes from the PR commit to the most recent
-            // upstream commit (including changes in-between! I think what we *actually* want to do is rebase on to
-            // mostRecentUpstreamCommit.
-            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(
-                    Bot.mirrorRepo.resolve(mostRecentUpstreamCommit.getName()).getName()).call();
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^" + commitsJson.size()).getName()).call();
+            // I don't think jgit supports globs, so every file is listed individually.
+            git.reset().setRef(Constants.HEAD).addPath(".travis.yml").addPath("appveyor.yml")
+                    .addPath(".github/README.md").addPath(".github/CONTRIBUTING.md").addPath(".ci/before_install.sh")
+                    .addPath(".ci/script.sh").call();
 
-            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".travis.yml").call();
-            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath("appveyor.yml").call();
-            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".github/**").call();
-            git.reset().setRef(Bot.mirrorRepo.resolve("HEAD").getName()).addPath(".ci/**").call();
-
-            git.checkout().setCreateBranch(true).setName("pr-" + latestCommitOfPr.getName() + "-squashed").call();
+            logger.debug("Git status after removing blacklisted files:");
+            Status status = git.status().call();
+            logger.debug("Added: " + status.getAdded());
+            logger.debug("Changed: " + status.getChanged());
+            logger.debug("Modified: " + status.getModified());
+            logger.debug("Untracked: " + status.getUntracked());
+            logger.debug("Removed: " + status.getRemoved());
+            logger.debug("Uncommited changes: " + status.getUncommittedChanges());
             try {
-               git.commit().setMessage(commitMessagesConcat.toString())
-                       .setAuthor(latestCommitOfPr.getAuthorIdent())
-                       .setCommitter(latestCommitOfPr.getCommitterIdent())
-                       .setAllowEmpty(false).call();
+                logger.debug("Committing...");
+                RevCommit commit = git.commit().setMessage(commitMessagesConcat.toString())
+                        .setAuthor(latestCommitOfPr.getAuthorIdent())
+                        .setCommitter(latestCommitOfPr.getCommitterIdent())
+                        .setAllowEmpty(false).call();
+                logger.debug("Commit: " + commit);
             } catch (EmtpyCommitException e) {
                 // If the commit is empty that means this PR only touches blacklisted files, so it has no intention
                 // of being merged to upstream, so we can stop now.
+                logger.debug("This PR only has changes to blacklisted files, so skipping upstream mergeability checks.");
                 setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl,
                         "PR has no changes meant for upstream.", tipBeforeImport);
                 return Response.ok().build();
@@ -542,7 +546,8 @@ public class GhEventService {
 
             // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
             // a patch between "mostRecentUpstreamCommit" and the one-commit PR. This should be accomplished by diffing
-            // between head of master and head of pr-{sha}
+            // between head of master and head of pr-{sha}-squashed - It shouldn't require all the craziness below,
+            // we should be able to get the diff of a single commit more easily.
             CanonicalTreeParser prTreeParser;
             CanonicalTreeParser masterTreeParser;
             Ref prHead = Bot.mirrorRepo.exactRef("refs/heads/pr-" + latestCommitOfPr.getName());
