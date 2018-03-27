@@ -492,42 +492,24 @@ public class GhEventService {
                 return Response.ok().build();
             }
 
-            // Now the PR is made up of one squashed commit, and blacklisted files are removed. So now we want to generate
-            // a patch between "mostRecentUpstreamCommit" and the one-commit PR. This should be accomplished by diffing
-            // between HEAD and HEAD^1- It shouldn't require all the craziness below, we should be able to get the diff
-            // of a single commit more easily.
-            CanonicalTreeParser prTreeParser;
-            CanonicalTreeParser masterTreeParser;
-            try (RevWalk walk = new RevWalk(Bot.mirrorRepo)) {
-                RevCommit prCommit = walk.parseCommit(squashedCommit.getId());
-                RevTree prTree = walk.parseTree(prCommit.getTree().getId());
-                CanonicalTreeParser treeParser = new CanonicalTreeParser();
-                try (ObjectReader reader = Bot.mirrorRepo.newObjectReader()) {
-                    treeParser.reset(reader, prTree.getId());
-                }
-                prTreeParser = treeParser;
+            // Now the PR is made up of one squashed commit, and blacklisted files are removed. So we use
+            // "git format-patch" to convert the squashed commit into a single patch file. We use the git process
+            // here because jgit does not make it easy to write a patch file.
 
-                RevCommit masterCommit = walk.parseCommit(latestMergeCommit.getId());
-                RevTree masterTree = walk.parseTree(masterCommit.getTree().getId());
-                treeParser = new CanonicalTreeParser();
-                try (ObjectReader reader = Bot.mirrorRepo.newObjectReader()) {
-                    treeParser.reset(reader, masterTree.getId());
-                }
-                masterTreeParser = treeParser;
-                walk.dispose();
+            ProcessBuilder gitProcessBuilder = new ProcessBuilder("git", "format-patch", "-1", squashedCommit.getName(),
+                    "--stdout", "--minimal")
+                    .directory(Bot.mirrorRepo.getDirectory().toPath().getParent().toFile())
+                    .redirectError(patchDir.resolve("git.patch").toFile())
+                    .redirectOutput(patchDir.resolve("git.patch").toFile());
+            Process gitProcess = gitProcessBuilder.start();
+            try {
+                gitProcess.waitFor(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
+                        "Could not execute `git format-patch` on PR.", tipBeforeImport);
+                logger.error("\u2718 Could not execute `git format-patch` on PR.");
+                logger.debug("exception: ", e);
             }
-
-            // Write the diff to a file, imitating "git format-patch" style.
-            OutputStreamWriter diffWriter = new OutputStreamWriter(Files.newOutputStream(
-                    patchDir.resolve("git.patch"), StandardOpenOption.CREATE), StandardCharsets.UTF_8);
-            diffWriter.write("From 3dc8d871836e529a31f93d514b9845dab0f52926 Mon Sep 17 00:00:00 2001\n" +
-                    "From: " + latestCommitOfPr.getAuthorIdent().getName() + " <" + latestCommitOfPr.getAuthorIdent().getEmailAddress() +">\n" +
-                    "Date: " + DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.ofInstant(Instant.ofEpochSecond(latestCommitOfPr.getCommitTime()),
-                    ZoneId.of("GMT"))) + "\n" +
-                    "Subject: [PATCH] " + commitMessagesConcat.toString().split("\n")[0] + "\n\n");
-            diffWriter.close();
-            git.diff().setOldTree(masterTreeParser).setNewTree(prTreeParser).setOutputStream(
-                    Files.newOutputStream(patchDir.resolve("git.patch"), StandardOpenOption.APPEND)).call();
 
         } catch (GitAPIException | IOException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
@@ -557,10 +539,8 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        if (true) {
-            return Response.ok().build();
-        }
-
+        // Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
+        // as mostRecentUpstreamCommit
         // Apply the hg patch to the upstream hg repo
         logger.debug("Fetching tip revision before import...");
         logger.debug("Tip revision before import: " + tipBeforeImport);
