@@ -795,23 +795,27 @@ public class GhEventService {
                 "jfxmirror", "pr", prNum, prShaHead);
         logger.debug("Will generate webrev against revision: " + previousCommit);
         ProcessBuilder webrevBuilder;
+        String[] webrevBugArgs = { "", "" };
+        if (!jbsBugsReferenced.isEmpty()) {
+            webrevBugArgs[0] = "-c";
+            webrevBugArgs[1] = jbsBugsReferenced.iterator().next().substring(4);
+        }
         if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString()
-                            .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/")
-                    + " -r " + previousCommit + " -N -m -o " + webRevOutputPath.toString()
-                    .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") + "\"";
-            logger.info("invocation: " + kshInvocation);
+                            .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") +
+                    " -r " + previousCommit + " -N -m -o " + webRevOutputPath.toString()
+                    .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") +
+                    (!jbsBugsReferenced.isEmpty() ? (" " + webrevBugArgs[0] + " " + webrevBugArgs[1]) : "") + "\"";
             webrevBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
         } else {
             // Just call ksh directly.
             webrevBuilder = new ProcessBuilder("ksh",
                     Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
-                    "-N", "-m",
+                    "-N", "-m", webrevBugArgs[0], webrevBugArgs[1],
                     "-o", webRevOutputPath.toString());
         }
-        // TODO: Add -c argument for the bug ID when we implement JBS bugs
         webrevBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
             webrevBuilder.inheritIO();
@@ -840,6 +844,8 @@ public class GhEventService {
             } catch (IOException e) {
                 logger.error("\u2718 Could not create directory: " + statusPath);
                 logger.debug("exception: ", e);
+                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.", tipBeforeImport);
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
 
@@ -892,6 +898,7 @@ public class GhEventService {
             logger.debug("exception: ", e);
         }
     }
+
     /**
      * Fetches, extracts, and then returns the OCA signatures from Oracle's website.
      */
