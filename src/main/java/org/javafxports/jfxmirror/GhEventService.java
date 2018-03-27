@@ -399,6 +399,9 @@ public class GhEventService {
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         }
+
+        // TODO: git fetch origin master, git rebase origin/master to sync with mirror github repository.
+
         // Find the most recent merge commit from "javafxports-github-bot" so that we can use it to sync the upstream
         // hg repository so that the exported git patch and imported hg patch are referencing the same repository state.
         Git git = new Git(Bot.mirrorRepo);
