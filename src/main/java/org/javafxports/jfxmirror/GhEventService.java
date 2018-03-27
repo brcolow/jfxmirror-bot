@@ -10,16 +10,11 @@ import static org.javafxports.jfxmirror.OcaStatus.SIGNED;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -55,12 +50,8 @@ import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.Constants;
-import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.revwalk.RevTree;
-import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.transport.RefSpec;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -73,7 +64,6 @@ import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.IdentifyCommand;
 import com.aragost.javahg.commands.ImportCommand;
 import com.aragost.javahg.commands.UpdateCommand;
-import com.aragost.javahg.commands.UpdateResult;
 import com.aragost.javahg.ext.mq.StripCommand;
 import com.atlassian.jira.rest.client.api.JiraRestClient;
 import com.atlassian.jira.rest.client.api.JiraRestClientFactory;
@@ -100,6 +90,7 @@ public class GhEventService {
     private static final String OCA_SEP = "@@@";
     private static final Pattern BUG_PATTERN = Pattern.compile("JDK-\\d\\d\\d\\d\\d\\d\\d");
     private static final Pattern DOUBLE_QUOTE_PATTERN = Pattern.compile("\"([^\"]*)\"");
+    private static final JiraRestClientFactory CLIENT_FACTORY = new AsynchronousJiraRestClientFactory();
 
     private static final Logger logger = LoggerFactory.getLogger(GhEventService.class);
 
@@ -400,11 +391,21 @@ public class GhEventService {
             }
         }
 
-        // TODO: git fetch origin master, git rebase origin/master to sync with mirror github repository.
-
         // Find the most recent merge commit from "javafxports-github-bot" so that we can use it to sync the upstream
         // hg repository so that the exported git patch and imported hg patch are referencing the same repository state.
         Git git = new Git(Bot.mirrorRepo);
+
+        // Sync the local repository with github.
+        try {
+            git.fetch().setRemote("origin").setRefSpecs("refs/heads/master").call();
+            git.rebase().setUpstream("refs/heads/master").call();
+        } catch (GitAPIException e) {
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not sync git mirror repository.", null);
+            logger.error("\u2718 Could not sync git mirror repository.");
+            logger.debug("exception: ", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
         RevCommit latestMergeCommit = null;
 
         try {
@@ -463,6 +464,7 @@ public class GhEventService {
         for (JsonNode commitJson : commitsJson) {
             commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
         }
+
         // At this point we know that "mostRecentUpsteamCommit" is the latest commit from upstream to be merged into
         // the git mirror repository. Thus we use that for our head for constructing the git patch. But first we
         // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
@@ -553,15 +555,15 @@ public class GhEventService {
             importCommand.execute(hgPatchPath.toFile());
             logger.debug("Updating upstream hg repository...");
             // TODO: Could skip this by using `--bypass` argument to importCommand?
-            UpdateResult updateResult = UpdateCommand.on(Bot.upstreamRepo).execute();
+            UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
                     "Could not apply PR changeset to upstream hg repository.", tipBeforeImport);
             logger.error("\u2718 Could not apply PR changeset to upstream mercurial repository.");
             logger.debug("exception: ", e);
-            // FIXME: Uncomment this after testing
-            // return Response.status(Response.Status.BAD_REQUEST).build();
+            return Response.status(Response.Status.BAD_REQUEST).build();
         }
+
         String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         logger.debug("Previous commit (after import): " + previousCommit);
         if (!previousCommit.equals(tipBeforeImport)) {
@@ -722,9 +724,7 @@ public class GhEventService {
         }
 
         Set<String> foundJbsBugs = new HashSet<>();
-        // FIXME: Cache the client
-        JiraRestClientFactory factory = new AsynchronousJiraRestClientFactory();
-        JiraRestClient jiraRestClient = factory.create(URI.create("https://bugs.openjdk.java.net"),
+        JiraRestClient jiraRestClient = CLIENT_FACTORY.create(URI.create("https://bugs.openjdk.java.net"),
                 new AnonymousAuthenticationHandler());
         for (String jbsBug : jbsBugsReferenced) {
             Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
