@@ -60,9 +60,12 @@ import org.jsoup.select.Selector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.aragost.javahg.Changeset;
 import com.aragost.javahg.commands.ExecutionException;
 import com.aragost.javahg.commands.IdentifyCommand;
 import com.aragost.javahg.commands.ImportCommand;
+import com.aragost.javahg.commands.LogCommand;
+import com.aragost.javahg.commands.PullCommand;
 import com.aragost.javahg.commands.UpdateCommand;
 import com.aragost.javahg.ext.mq.StripCommand;
 import com.atlassian.jira.rest.client.api.JiraRestClient;
@@ -160,7 +163,9 @@ public class GhEventService {
             case "issue_comment":
                 return handleComment(event);
             case "pull_request":
+                logger.debug("Fetching tip revision before import...");
                 final String tipBeforeImport = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-1").execute();
+                logger.debug("Tip revision before import: " + tipBeforeImport);
                 // Make sure to always roll the hg repository back, otherwise handling subsequent PR events will break.
                 try {
                     return handlePullRequest(event, tipBeforeImport);
@@ -545,10 +550,30 @@ public class GhEventService {
         }
 
         // Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
-        // as mostRecentUpstreamCommit
+        // as mostRecentUpstreamCommit.
+
+        try {
+            PullCommand.on(Bot.upstreamRepo).execute();
+            UpdateCommand.on(Bot.upstreamRepo).execute();
+        } catch (IOException e) {
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not sync upstream hg repository.", null);
+            logger.error("\u2718 Could not sync upstream hg repository.");
+            logger.debug("exception: ", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+
+        logger.debug("most recent upstream commit author: " + mostRecentUpstreamCommit.getAuthorIdent());
+        logger.debug("most recent upstream commit message: " + mostRecentUpstreamCommit.getFullMessage());
+
+        for (Changeset changeset : LogCommand.on(Bot.upstreamRepo).limit(10).execute()) {
+            // It would be nice if the git merge commit had the hg sha1, so we can find it by iterating
+            // over the hg changesets.
+            logger.debug("hg changeset user: " + changeset.getUser());
+            logger.debug("hg changeset message: " + changeset.getMessage());
+            //if (mostRecentUpstreamCommit.getAuthorIdent().getEmailAddress().equals(changeset.
+            // changeset.getUser()
+        }
         // Apply the hg patch to the upstream hg repo
-        logger.debug("Fetching tip revision before import...");
-        logger.debug("Tip revision before import: " + tipBeforeImport);
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
             // importCommand.cmdAppend("--no-commit");

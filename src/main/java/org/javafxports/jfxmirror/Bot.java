@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
@@ -102,6 +103,22 @@ public class Bot {
 
         logger.debug("Initialized git mirror repository: " + mirrorRepo.getDirectory());
 
+        logger.debug("Checking for \"jcheck.py\"...");
+        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
+        if (!Files.exists(jcheckPath)) {
+            logger.debug("Downloading \"jcheck.py\"...");
+            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
+                Files.copy(in, jcheckPath);
+                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not download \"jcheck.py\".");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+        } else {
+            logger.info("\u2713 Found \"jcheck.py\".");
+        }
+
         RepositoryConfiguration repoConf = new RepositoryConfiguration();
         repoConf.addExtension(JCheckExtension.class);
         if (!Files.exists(UPSTREAM_REPO_PATH)) {
@@ -119,6 +136,22 @@ public class Bot {
             logger.debug("Cloning upstream OpenJFX mercurial repository...");
             logger.debug("This may take a while (like 20 or more minutes) as the OpenJFX repository is large.");
             upstreamRepo = Repository.clone(repoConf, UPSTREAM_REPO_PATH.toFile(), UPSTREAM_REPO_URL);
+
+            // Add the necessary hg config for using jcheck and the strip extension.
+            Path hgRcPath = upstreamRepo.getDirectory().toPath().resolve(".hg").resolve("hgrc");
+            logger.debug("Adding config to \".hg/hgrc\" for using jcheck...");
+            try {
+                // Use platform-specific line separator so that line endings are not mixed as we are appending to hgrc.
+                Files.write(hgRcPath, (System.lineSeparator() + "[extensions]" + System.lineSeparator() + "jcheck = " +
+                        jcheckPath + System.lineSeparator() + "strip =" + System.lineSeparator())
+                        .getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
+            } catch (IOException e) {
+                logger.error("\u2718 Could not write to .hg/hgrc.");
+                logger.debug("exception: ", e);
+                System.exit(1);
+            }
+
+            logger.debug("Added config to \".hg/hgrc\".");
         } else {
             // Repository already exists.
             upstreamRepo = Repository.open(repoConf, UPSTREAM_REPO_PATH.toFile());
@@ -127,8 +160,8 @@ public class Bot {
         logger.debug("Initialized OpenJFX upstream repository: " + upstreamRepo.getDirectory());
         logger.debug("Using mercurial version: " + upstreamRepo.getHgVersion());
 
-        Path jcheckDir = Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck");
-        if (!Files.isDirectory(Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck"))) {
+        Path jcheckDir = upstreamRepo.getDirectory().toPath().resolve(".jcheck");
+        if (!Files.isDirectory(upstreamRepo.getDirectory().toPath().resolve(".jcheck"))) {
             try {
                 Files.createDirectory(jcheckDir);
             } catch (IOException e) {
@@ -138,23 +171,7 @@ public class Bot {
             }
         }
 
-        logger.debug("Checking for \"jcheck.py\"...");
-        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
-        if (!Files.exists(jcheckPath)) {
-            logger.debug("Downloading \"jcheck.py\"...");
-            try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
-                Files.copy(in, jcheckPath);
-                logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
-            } catch (IOException e) {
-                logger.error("\u2718 Could not download \"jcheck.py\".");
-                logger.debug("exception: ", e);
-                System.exit(1);
-            }
-        } else {
-            logger.info("\u2713 Found \"jcheck.py\".");
-        }
-
-        Path jcheckConfPath = Bot.upstreamRepo.getDirectory().toPath().resolve(".jcheck").resolve("conf");
+        Path jcheckConfPath = upstreamRepo.getDirectory().toPath().resolve(".jcheck").resolve("conf");
         if (!Files.exists(jcheckConfPath)) {
             logger.debug("Downloading jcheck config file...");
             try (InputStream in = URI.create(JCHECK_CONF_URL).toURL().openStream()) {
@@ -167,18 +184,6 @@ public class Bot {
             }
         } else {
             logger.info("\u2713 Found jcheck config file: " + jcheckConfPath);
-        }
-
-        Path hgRcPath = Bot.upstreamRepo.getDirectory().toPath().resolve(".hg").resolve("hgrc");
-        if (!Files.exists(hgRcPath)) {
-            logger.debug("Writing repository-local hgrc for using jcheck.");
-            try {
-                Files.write(hgRcPath, ("[extensions]\njcheck = " + jcheckPath + "\nstrip = \n").getBytes(StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                logger.error("\u2718 Could not create repository-local hgrc.");
-                logger.debug("exception: ", e);
-                System.exit(1);
-            }
         }
 
         logger.debug("Checking for \"webrev.ksh\"...");
