@@ -47,8 +47,22 @@ import javax.ws.rs.core.Response;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
+import org.eclipse.jgit.api.errors.AbortedByHookException;
+import org.eclipse.jgit.api.errors.CheckoutConflictException;
+import org.eclipse.jgit.api.errors.ConcurrentRefUpdateException;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.api.errors.InvalidRefNameException;
+import org.eclipse.jgit.api.errors.InvalidRemoteException;
+import org.eclipse.jgit.api.errors.NoHeadException;
+import org.eclipse.jgit.api.errors.NoMessageException;
+import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
+import org.eclipse.jgit.api.errors.RefNotFoundException;
+import org.eclipse.jgit.api.errors.TransportException;
+import org.eclipse.jgit.api.errors.UnmergedPathsException;
+import org.eclipse.jgit.api.errors.WrongRepositoryStateException;
+import org.eclipse.jgit.errors.AmbiguousObjectException;
+import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.RefSpec;
@@ -378,6 +392,7 @@ public class GhEventService {
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API,
                 repoFullName[0], repoFullName[1], prShaHead);
+        PullRequestContext pullRequestContext = new PullRequestContext(pullRequest, prNum, prShaHead, statusUrl);
 
         // Set the status of the PR to pending while we do the necessary checks.
         setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...", null);
@@ -400,10 +415,11 @@ public class GhEventService {
         // hg repository so that the exported git patch and imported hg patch are referencing the same repository state.
         Git git = new Git(Bot.mirrorRepo);
 
+        String mirrorBaseBranch = "master"; // FIXME: May want to switch to "develop"
         // Sync the local repository with github.
         try {
-            git.fetch().setRemote("origin").setRefSpecs("refs/heads/master").call();
-            git.rebase().setUpstream("refs/heads/master").call();
+            git.fetch().setRemote("origin").setRefSpecs("refs/heads/" + mirrorBaseBranch).call();
+            git.rebase().setUpstream("refs/heads/" + mirrorBaseBranch).call();
         } catch (GitAPIException e) {
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not sync git mirror repository.", null);
             logger.error("\u2718 Could not sync git mirror repository.");
@@ -411,63 +427,26 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        RevCommit latestMergeCommit = null;
-
+        RevCommit mostRecentUpstreamCommit;
         try {
-            Iterable<RevCommit> commits = git.log().all().call();
-            for (RevCommit commit : commits) {
-                if (commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
-                        commit.getShortMessage().equalsIgnoreCase("Merge from (root)")) {
-                    latestMergeCommit = commit;
-                    break;
-                }
-            }
-        } catch (IOException | GitAPIException e) {
-            e.printStackTrace();
+            mostRecentUpstreamCommit = findMostRecentUpstreamCommit(git);
         }
-
-        if (latestMergeCommit == null) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not find previous merge commit.", null);
-            logger.error("\u2718 Could not find previous merge commit.");
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }
-
-        RevCommit mostRecentUpstreamCommit = null;
-        for (RevCommit commit : latestMergeCommit.getParents()) {
-            if (!commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
-                    !commit.getShortMessage().contains("Merge from (root)")) {
-                logger.info("\u2713 Found latest merge commit by " + commit.getAuthorIdent().getName() +
-                        ": \"" + commit.getShortMessage() + "\" (" + commit.getName() + ")");
-                mostRecentUpstreamCommit = commit;
-                break;
-            }
-        }
-
-        if (mostRecentUpstreamCommit == null) {
+        catch (IOException e) {
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not determine latest upstream commit in mirror.", null);
             logger.error("\u2718 Could not determine latest upstream commit in mirror.");
+            logger.debug("exception: ", e);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
-        Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
-                .request()
-                .header("Authorization", "token " + GH_ACCESS_TOKEN)
-                .accept(GH_ACCEPT)
-                .get();
         JsonNode commitsJson;
         try {
-            commitsJson = new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
-        } catch (IOException e) {
+            commitsJson = fetchCommitsJson(pullRequest);
+        }
+        catch (IOException e) {
             logger.error("\u2718 Could not read commits JSON.");
             logger.debug("exception: ", e);
             setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read commits JSON.", tipBeforeImport);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }
-
-        StringBuilder commitMessagesConcat = new StringBuilder();
-        for (JsonNode commitJson : commitsJson) {
-            commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
         }
 
         // At this point we know that "mostRecentUpsteamCommit" is the latest commit from upstream to be merged into
@@ -475,25 +454,9 @@ public class GhEventService {
         // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
         // on upstream).
         try {
-            // Fetch and checkout pull request.
-            git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
-                    "refs/pull/" + prNum + "/head:refs/heads/" + "pr-" + prShaHead)).call();
-            git.checkout().setName("pr-" + prShaHead).call();
-            RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
-
-            // Squash all commits in the PR to one (concatenate commit messages).
-            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^" + commitsJson.size()).getName()).call();
-            // I don't think jgit supports globs, so every file is listed individually.
-            git.reset().setRef(Constants.HEAD).addPath(".travis.yml").addPath("appveyor.yml")
-                    .addPath(".github/README.md").addPath(".github/CONTRIBUTING.md").addPath(".ci/before_install.sh")
-                    .addPath(".ci/script.sh").call();
-            RevCommit squashedCommit;
-            try {
-                squashedCommit = git.commit().setMessage(commitMessagesConcat.toString())
-                        .setAuthor(latestCommitOfPr.getAuthorIdent())
-                        .setCommitter(latestCommitOfPr.getCommitterIdent())
-                        .setAllowEmpty(false).call();
-            } catch (EmtpyCommitException e) {
+            writePullRequestAsPatch(git, pullRequestContext, commitsJson, patchDir);
+        } catch (IOException e) {
+            if (e.getCause().getClass().equals(EmtpyCommitException.class)) {
                 // If the commit is empty that means this PR only touches blacklisted files, so it has no intention
                 // of being merged to upstream, so we can stop now.
                 logger.debug("This PR only has changes to blacklisted files, so skipping upstream mergeability checks.");
@@ -502,30 +465,11 @@ public class GhEventService {
                 return Response.ok().build();
             }
 
-            // Now the PR is made up of one squashed commit, and blacklisted files are removed. So we use
-            // "git format-patch" to convert the squashed commit into a single patch file. We use the git process
-            // here because jgit does not make it easy to write a patch file.
-
-            ProcessBuilder gitProcessBuilder = new ProcessBuilder("git", "format-patch", "-1", squashedCommit.getName(),
-                    "--stdout", "--minimal")
-                    .directory(Bot.mirrorRepo.getDirectory().toPath().getParent().toFile())
-                    .redirectError(patchDir.resolve("git.patch").toFile())
-                    .redirectOutput(patchDir.resolve("git.patch").toFile());
-            Process gitProcess = gitProcessBuilder.start();
-            try {
-                gitProcess.waitFor(30, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
-                        "Could not execute `git format-patch` on PR.", tipBeforeImport);
-                logger.error("\u2718 Could not execute `git format-patch` on PR.");
-                logger.debug("exception: ", e);
-            }
-
-        } catch (GitAPIException | IOException e) {
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
                     "Could not setup upstream equivalent commit.", tipBeforeImport);
             logger.error("\u2718 Could not setup upstream equivalent commit.");
             logger.debug("exception: ", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
         String hgPatch;
@@ -566,8 +510,8 @@ public class GhEventService {
         logger.debug("most recent upstream commit message: " + mostRecentUpstreamCommit.getFullMessage());
 
         for (Changeset changeset : LogCommand.on(Bot.upstreamRepo).limit(10).execute()) {
-            // It would be nice if the git merge commit had the hg sha1, so we can find it by iterating
-            // over the hg changesets.
+            // It would be nice if the git merge commit (latestMergeCommit) had the hg sha1, so we can find it by
+            // iterating over the hg changesets.
             logger.debug("hg changeset user: " + changeset.getUser());
             logger.debug("hg changeset message: " + changeset.getMessage());
             //if (mostRecentUpstreamCommit.getAuthorIdent().getEmailAddress().equals(changeset.
@@ -894,6 +838,97 @@ public class GhEventService {
         setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
 
         return Response.ok().build();
+    }
+
+    private static void writePullRequestAsPatch(Git git, PullRequestContext pullRequestContext,
+                                         JsonNode commitsJson, java.nio.file.Path patchDir) throws IOException {
+        StringBuilder commitMessagesConcat = new StringBuilder();
+        for (JsonNode commitJson : commitsJson) {
+            commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
+        }
+
+        try {
+            // Fetch and checkout pull request.
+            git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
+                    "refs/pull/" + pullRequestContext.getPrNum() + "/head:refs/heads/" + "pr-" + pullRequestContext.getPrShaHead())).call();
+            git.checkout().setName("pr-" + pullRequestContext.getPrShaHead()).call();
+            RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
+
+            // Squash all commits in the PR to one (concatenate commit messages).
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^" + commitsJson.size()).getName()).call();
+            // I don't think jgit supports globs, so every file is listed individually.
+            git.reset().setRef(Constants.HEAD).addPath(".travis.yml").addPath("appveyor.yml")
+                    .addPath(".github/README.md").addPath(".github/CONTRIBUTING.md").addPath(".ci/before_install.sh")
+                    .addPath(".ci/script.sh").call();
+            RevCommit squashedCommit = git.commit().setMessage(commitMessagesConcat.toString())
+                        .setAuthor(latestCommitOfPr.getAuthorIdent())
+                        .setCommitter(latestCommitOfPr.getCommitterIdent())
+                        .setAllowEmpty(false).call();
+            // Now the PR is made up of one squashed commit, and blacklisted files are removed. So we use
+            // "git format-patch" to convert the squashed commit into a single patch file. We use the git process
+            // here because jgit does not make it easy to write a patch file.
+            ProcessBuilder gitProcessBuilder = new ProcessBuilder("git", "format-patch", "-1", squashedCommit.getName(),
+                    "--stdout", "--minimal")
+                    .directory(Bot.mirrorRepo.getDirectory().toPath().getParent().toFile())
+                    .redirectError(patchDir.resolve("git.patch").toFile())
+                    .redirectOutput(patchDir.resolve("git.patch").toFile());
+            Process gitProcess = gitProcessBuilder.start();
+            gitProcess.waitFor(30, TimeUnit.SECONDS);
+        } catch (GitAPIException | InterruptedException e) {
+            throw new IOException(e);
+        }
+    }
+
+    private static JsonNode fetchCommitsJson(JsonNode pullRequest) throws IOException {
+        String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
+        Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
+                .request()
+                .header("Authorization", "token " + GH_ACCESS_TOKEN)
+                .accept(GH_ACCEPT)
+                .get();
+        return new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
+    }
+
+    private static RevCommit findMostRecentUpstreamCommit(Git git) throws IOException {
+        RevCommit mostRecentUpstreamCommit = null;
+        RevCommit latestMergeCommit = null;
+
+        Iterable<RevCommit> commits;
+        try {
+            commits = git.log().all().call();
+        } catch (GitAPIException e) {
+            throw new IOException(e);
+        }
+
+        for (RevCommit commit : commits) {
+            if (commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
+                    commit.getShortMessage().equalsIgnoreCase("Merge from (root)")) {
+                latestMergeCommit = commit;
+                break;
+            }
+        }
+
+        if (latestMergeCommit == null) {
+            throw new IOException("could not find commit with author: \"javafxports-github-bot\" " +
+                    "and message: \"Merge from (root)\"");
+        }
+
+        for (RevCommit commit : latestMergeCommit.getParents()) {
+            if (!commit.getAuthorIdent().getName().equalsIgnoreCase("javafxports-github-bot") &&
+                    !commit.getShortMessage().contains("Merge from (root)")) {
+                logger.info("\u2713 Found latest merge commit by " + commit.getAuthorIdent().getName() +
+                        ": \"" + commit.getShortMessage() + "\" (" + commit.getName() + ")");
+                mostRecentUpstreamCommit = commit;
+                break;
+            }
+        }
+
+        if (mostRecentUpstreamCommit == null) {
+            throw new IOException("could not find commit with author NOT equal to: \"javafxports-github-bot\" " +
+                    "and message NOT equal to: \"Merge from (root)\" in parents of latest merge commit");
+        }
+
+        return mostRecentUpstreamCommit;
     }
 
     /**
