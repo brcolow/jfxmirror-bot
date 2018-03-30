@@ -607,6 +607,12 @@ public class GhEventService {
         pullRequestContext.setJbsBugsReferenced(jbsBugsReferenced);
         pullRequestContext.setJbsBugsReferencedButNotFound(Sets.difference(
                 jbsBugsReferenced, jbsBugsReferencedAndFound));
+        try {
+            jiraRestClient.close();
+        } catch (IOException e) {
+            logger.debug("exception: ", e);
+            throw new RuntimeException(e);
+        }
     }
 
     private static OcaStatus checkOcaStatus(PullRequestContext pullRequestContext) throws IOException {
@@ -660,24 +666,13 @@ public class GhEventService {
                         .get("href").asText();
                 String comment = "@" + username + " ";
                 if (foundUsername) {
-                    try {
-                        Files.write(ocaMarkerFile, FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
-                        ocaStatus = FOUND_PENDING;
-                    } catch (IOException e) {
-                        logger.error("\u2718 Could not write OCA marker file.");
-                        logger.debug("exception: ", e);
-                    }
-
+                    Files.write(ocaMarkerFile, FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
+                    ocaStatus = FOUND_PENDING;
                     logger.debug("Found GitHub username of user who opened PR on OCA signature list.");
                     comment += OcaComments.commentWhenFoundUsername(ocaLine, BOT_USERNAME);
                 } else {
-                    try {
-                        Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
-                        ocaStatus = NOT_FOUND_PENDING;
-                    } catch (IOException e) {
-                        logger.error("\u2718 Could not write OCA marker file.");
-                        logger.debug("exception: ", e);
-                    }
+                    Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
+                    ocaStatus = NOT_FOUND_PENDING;
                     // Post comment on PR telling them we could not find their github username listed on OCA signature page,
                     // ask them if they have signed it.
                     comment += OcaComments.commentWhenNotFoundUsername();
@@ -694,6 +689,8 @@ public class GhEventService {
                     throw new IOException("404 from github, trying to post comment on PR: " +
                             commentResponse.readEntity(String.class));
                 }
+
+                commentResponse.close();
             }
         }
         return ocaStatus;
@@ -728,18 +725,24 @@ public class GhEventService {
                     "-o", webRevOutputPath.toString());
         }
         webrevBuilder.directory(Bot.upstreamRepo.getDirectory());
+        Process webrev = null;
         try {
             webrevBuilder.inheritIO();
             logger.debug("Generating webrev for PR #" + pullRequestContext.getPrNum() +
                     " (" + pullRequestContext.getPrShaHead() + ")...");
-            Process webrev = webrevBuilder.start();
-            boolean webrevFinished = webrev.waitFor(2, TimeUnit.MINUTES);
-            if (!webrevFinished) {
+            webrev = webrevBuilder.start();
+            boolean finished = webrev.waitFor(2, TimeUnit.MINUTES);
+            if (!finished) {
+                webrev.destroyForcibly();
                 throw new IOException("could not generate webrev in 2 minutes");
             }
         } catch (SecurityException | InterruptedException e) {
+            if (webrev != null) {
+                webrev.destroyForcibly();
+            }
             throw new IOException(e);
         }
+        webrev.destroy();
     }
 
     private static void runJCheck(PullRequestContext pullRequestContext) throws IOException {
@@ -756,14 +759,20 @@ public class GhEventService {
                 .redirectOutput(jcheckOutputPath.toFile());
         Process jcheck = jcheckBuilder.start();
         try {
-            jcheck.waitFor(1, TimeUnit.MINUTES);
+            boolean finished = jcheck.waitFor(1, TimeUnit.MINUTES);
+            if (!finished) {
+                jcheck.destroyForcibly();
+                throw new IOException("could not run jcheck in 1 minute");
+            }
         } catch (InterruptedException e) {
+            jcheck.destroyForcibly();
             throw new IOException(e);
         }
+        jcheck.destroy();
     }
 
     private static void writePullRequestAsPatch(Git git, PullRequestContext pullRequestContext,
-                                         JsonNode commitsJson, java.nio.file.Path patchDir) throws IOException {
+                                                JsonNode commitsJson, java.nio.file.Path patchDir) throws IOException {
         Objects.requireNonNull(git, "git must not be null");
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         Objects.requireNonNull(commitsJson, "commitsJson must not be null");
@@ -773,15 +782,18 @@ public class GhEventService {
             commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
         }
 
+        Process gitProcess = null;
         try {
             // Fetch and checkout pull request.
             git.fetch().setRemote("origin").setRefSpecs(new RefSpec(
-                    "refs/pull/" + pullRequestContext.getPrNum() + "/head:refs/heads/" + "pr-" + pullRequestContext.getPrShaHead())).call();
+                    "refs/pull/" + pullRequestContext.getPrNum() + "/head:refs/heads/" + "pr-" +
+                            pullRequestContext.getPrShaHead())).call();
             git.checkout().setName("pr-" + pullRequestContext.getPrShaHead()).call();
             RevCommit latestCommitOfPr = git.log().setMaxCount(1).call().iterator().next();
 
             // Squash all commits in the PR to one (concatenate commit messages).
-            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve("HEAD^" + commitsJson.size()).getName()).call();
+            git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve(
+                    "HEAD^" + commitsJson.size()).getName()).call();
             // I don't think jgit supports globs, so every file is listed individually.
             git.reset().setRef(Constants.HEAD).addPath(".travis.yml").addPath("appveyor.yml")
                     .addPath(".github/README.md").addPath(".github/CONTRIBUTING.md").addPath(".ci/before_install.sh")
@@ -798,9 +810,17 @@ public class GhEventService {
                     .directory(Bot.mirrorRepo.getDirectory().toPath().getParent().toFile())
                     .redirectError(patchDir.resolve("git.patch").toFile())
                     .redirectOutput(patchDir.resolve("git.patch").toFile());
-            Process gitProcess = gitProcessBuilder.start();
-            gitProcess.waitFor(30, TimeUnit.SECONDS);
+            gitProcess = gitProcessBuilder.start();
+            boolean finished = gitProcess.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                gitProcess.destroyForcibly();
+                throw new IOException("could not run \"git format-patch\" in 30 seconds");
+            }
+            gitProcess.destroy();
         } catch (GitAPIException | InterruptedException e) {
+            if (gitProcess != null) {
+                gitProcess.destroyForcibly();
+            }
             throw new IOException(e);
         }
     }
@@ -813,7 +833,9 @@ public class GhEventService {
                 .header("Authorization", "token " + GH_ACCESS_TOKEN)
                 .accept(GH_ACCEPT)
                 .get();
-        return new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
+        JsonNode result = new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
+        commitsResponse.close();
+        return result;
     }
 
     private static RevCommit findMostRecentUpstreamCommit(Git git) throws IOException {
@@ -872,18 +894,18 @@ public class GhEventService {
                 StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
             } catch (Exception e) {
                 logger.debug("exception: ", e);
+                throw new RuntimeException(e);
             }
         }
     }
 
     private static void resetGitRepo() {
         logger.debug("Reseting git repository to \"origin/master\"...");
-
-        Git git = new Git(Bot.mirrorRepo);
-        try {
+        try (Git git = new Git(Bot.mirrorRepo)) {
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef("refs/remotes/origin/master").call();
         } catch (GitAPIException e) {
             logger.debug("exception: ", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -908,6 +930,7 @@ public class GhEventService {
             logger.error("\u2718 Could not extract list of OCA signatures.");
             logger.debug("Check the CSS selector as the HTML of the OCA page may have changed.");
             logger.debug("exception: ", e);
+            throw new IOException(e);
         }
 
         return signatures;
@@ -942,9 +965,12 @@ public class GhEventService {
         if (statusResponse.getStatus() == 404) {
             logger.error("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
                     "environment variable is set correctly?");
+            statusResponse.close();
             Bot.cleanup();
             System.exit(1);
         }
+
+        statusResponse.close();
     }
 
     /**

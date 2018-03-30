@@ -14,7 +14,6 @@ import javax.ws.rs.client.ClientBuilder;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.glassfish.grizzly.http.server.HttpServer;
 import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
@@ -57,7 +56,7 @@ public class Bot {
     private Bot() {}
 
     public static void main(String[] args) {
-        if (System.getenv("jfxmirror_gh_token") == null) {
+        if (System.getenv("JFXMIRROR_GH_TOKEN") == null) {
             logger.error("\u2718 \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
             logger.debug("This must be set to your personal access token created for jfxmirror_bot.");
             logger.debug("You can create an access token by going to: https://github.com/settings/tokens");
@@ -76,17 +75,15 @@ public class Bot {
                 // Probably the first time running, clone the git mirror repository.
                 logger.debug("Git mirror repository not found.");
                 logger.debug("Cloning git mirror repository...");
-                logger.debug("This may take a while (like 20 or more minutes) as the mirror repository is large.");
+                logger.debug("This may take a while (like 20 or more minutes) as the OpenJFX repository is large.");
                 Git git = Git.cloneRepository()
                         .setURI(MIRROR_REPO_URL)
                         .setDirectory(MIRROR_REPO_PATH.toFile())
                         .call();
-                logger.debug("Cloned git mirror repository: " + MIRROR_REPO_PATH);
+                logger.debug("Cloned git mirror repository to: " + MIRROR_REPO_PATH);
                 git.close();
             } catch (GitAPIException e) {
-                logger.error("\u2718 Could not clone javafxports git mirror repository.");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not clone javafxports git mirror repository.", e, 1);
             }
         }
 
@@ -95,12 +92,8 @@ public class Bot {
                     .setGitDir(MIRROR_REPO_PATH.resolve(".git").toFile())
                     .readEnvironment()
                     .build();
-            Ref head = mirrorRepo.exactRef("refs/heads/master");
-            logger.debug("git head: " + head);
         } catch (IOException e) {
-            logger.error("\u2718 Could not initialize javafxports git mirror repository.");
-            logger.debug("exception: ", e);
-            System.exit(1);
+            exitWithError("Could not initialize javafxports git mirror repository.", e, 1);
         }
 
         logger.debug("Initialized git mirror repository: " + mirrorRepo.getDirectory());
@@ -113,9 +106,7 @@ public class Bot {
                 Files.copy(in, jcheckPath);
                 logger.info("\u2713 Downloaded \"jcheck.py\" to: " + jcheckPath);
             } catch (IOException e) {
-                logger.error("\u2718 Could not download \"jcheck.py\".");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not download \"jcheck.py\".", e, 1);
             }
         } else {
             logger.info("\u2713 Found \"jcheck.py\".");
@@ -130,9 +121,7 @@ public class Bot {
                 Files.createDirectories(UPSTREAM_REPO_PATH);
                 logger.info("\u2713 Created: " + UPSTREAM_REPO_PATH);
             } catch (IOException e) {
-                logger.error("\u2718 Could not create mercurial repository directory: " + UPSTREAM_REPO_PATH);
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not create mercurial repository directory: \"" + UPSTREAM_REPO_PATH + "\"", e, 1);
             }
 
             logger.debug("Cloning upstream OpenJFX mercurial repository...");
@@ -148,12 +137,10 @@ public class Bot {
                         jcheckPath + System.lineSeparator() + "strip =" + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8), StandardOpenOption.APPEND);
             } catch (IOException e) {
-                logger.error("\u2718 Could not write to .hg/hgrc.");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not write to: " + hgRcPath, e, 1);
             }
 
-            logger.debug("Added config to \".hg/hgrc\".");
+            logger.debug("Added config to: \"" + hgRcPath + "\".");
         } else {
             // Repository already exists.
             upstreamRepo = Repository.open(repoConf, UPSTREAM_REPO_PATH.toFile());
@@ -167,9 +154,7 @@ public class Bot {
             try {
                 Files.createDirectory(jcheckDir);
             } catch (IOException e) {
-                logger.error("\u2718 Could not create \".jcheck\" directory at root of upstream hg repository.");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not create \".jcheck\" directory at root of upstream hg repository.", e, 1);
             }
         }
 
@@ -180,9 +165,7 @@ public class Bot {
                 Files.copy(in, jcheckConfPath);
                 logger.info("\u2713 Downloaded jcheck config file to: " + jcheckConfPath);
             } catch (IOException e) {
-                logger.error("\u2718 Could not download jcheck config file.");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not download jcheck config file.", e, 1);
             }
         } else {
             logger.info("\u2713 Found jcheck config file: " + jcheckConfPath);
@@ -194,9 +177,7 @@ public class Bot {
             try {
                 Files.createDirectories(webrevPath);
             } catch (IOException e) {
-                logger.error("\u2718 Could not create directory for \"webrev.ksh\".");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not create directory: \"" + webrevPath + "\"", e, 1);
             }
         }
 
@@ -206,9 +187,7 @@ public class Bot {
                 Files.copy(in, webrevPath.resolve("webrev.ksh"));
                 logger.info("\u2713 Downloaded \"webrev.ksh\" to: " + webrevPath.resolve("webrev.ksh"));
             } catch (IOException e) {
-                logger.error("\u2718 Could not download \"webrev.ksh\".");
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not download \"webrev.ksh\".", e, 1);
             }
         } else {
             logger.info("\u2713 Found \"webrev.ksh\".");
@@ -221,9 +200,7 @@ public class Bot {
             try {
                 Files.createFile(ocaFile);
             } catch (IOException e) {
-                logger.error("\u2718 Could not create OCA signature file: " + ocaFile);
-                logger.debug("exception: ", e);
-                System.exit(1);
+                exitWithError("Could not create OCA signature file: \"" + ocaFile + "\"", e, 1);
             }
         } else {
             logger.info("\u2713 Found OCA signature file: \"" + ocaFile + "\"");
@@ -257,6 +234,12 @@ public class Bot {
             cleanup();
             System.exit(1);
         }
+    }
+
+    private static void exitWithError(String errorMessage, Exception exception, int exitCode) {
+        logger.error("\u2718 " + errorMessage);
+        logger.debug("exception: ", exception);
+        System.exit(exitCode);
     }
 
     protected static void cleanup() {
