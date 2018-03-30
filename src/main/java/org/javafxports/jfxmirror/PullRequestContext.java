@@ -1,6 +1,7 @@
 package org.javafxports.jfxmirror;
 
 import java.util.Objects;
+import java.util.Set;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -10,6 +11,9 @@ public class PullRequestContext {
     private final String prNum;
     private final String prShaHead;
     private final String statusUrl;
+    private OcaStatus ocaStatus;
+    private Set<String> jbsBugsReferenced;
+    private Set<String> jbsBugsReferencedButNotFound;
 
     public PullRequestContext(JsonNode pullRequest, String prNum, String prShaHead, String statusUrl) {
         Objects.requireNonNull(pullRequest, "pullRequest must not be null");
@@ -36,5 +40,29 @@ public class PullRequestContext {
 
     public String getStatusUrl() {
         return statusUrl;
+    }
+
+    public OcaStatus getOcaStatus() {
+        return ocaStatus;
+    }
+
+    void setOcaStatus(OcaStatus ocaStatus) {
+        this.ocaStatus = ocaStatus;
+    }
+
+    public Set<String> getJbsBugsReferenced() {
+        return jbsBugsReferenced;
+    }
+
+    void setJbsBugsReferenced(Set<String> jbsBugsReferenced) {
+        this.jbsBugsReferenced = jbsBugsReferenced;
+    }
+
+    public Set<String> getJbsBugsReferencedButNotFound() {
+        return jbsBugsReferencedButNotFound;
+    }
+
+    void setJbsBugsReferencedButNotFound(Set<String> jbsBugsReferencedButNotFound) {
+        this.jbsBugsReferencedButNotFound = jbsBugsReferencedButNotFound;
     }
 }

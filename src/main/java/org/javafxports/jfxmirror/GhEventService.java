@@ -22,6 +22,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -47,22 +48,8 @@ import javax.ws.rs.core.Response;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
-import org.eclipse.jgit.api.errors.AbortedByHookException;
-import org.eclipse.jgit.api.errors.CheckoutConflictException;
-import org.eclipse.jgit.api.errors.ConcurrentRefUpdateException;
 import org.eclipse.jgit.api.errors.EmtpyCommitException;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.api.errors.InvalidRefNameException;
-import org.eclipse.jgit.api.errors.InvalidRemoteException;
-import org.eclipse.jgit.api.errors.NoHeadException;
-import org.eclipse.jgit.api.errors.NoMessageException;
-import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
-import org.eclipse.jgit.api.errors.RefNotFoundException;
-import org.eclipse.jgit.api.errors.TransportException;
-import org.eclipse.jgit.api.errors.UnmergedPathsException;
-import org.eclipse.jgit.api.errors.WrongRepositoryStateException;
-import org.eclipse.jgit.errors.AmbiguousObjectException;
-import org.eclipse.jgit.errors.IncorrectObjectTypeException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.RefSpec;
@@ -108,7 +95,6 @@ public class GhEventService {
     private static final Pattern BUG_PATTERN = Pattern.compile("JDK-\\d\\d\\d\\d\\d\\d\\d");
     private static final Pattern DOUBLE_QUOTE_PATTERN = Pattern.compile("\"([^\"]*)\"");
     private static final JiraRestClientFactory CLIENT_FACTORY = new AsynchronousJiraRestClientFactory();
-
     private static final Logger logger = LoggerFactory.getLogger(GhEventService.class);
 
     /**
@@ -206,9 +192,7 @@ public class GhEventService {
      * https://developer.github.com/v3/activity/events/types/#issuecommentevent
      */
     private Response handleComment(ObjectNode commentEvent) {
-        String action = commentEvent.get("action").asText();
-
-        switch (action.toLowerCase(US)) {
+        switch (commentEvent.get("action").asText().toLowerCase(US)) {
             case "created":
             case "edited":
                 break;
@@ -387,7 +371,7 @@ public class GhEventService {
         JsonNode pullRequest = pullRequestEvent.get("pull_request");
         String prNum = pullRequest.get("number").asText();
         String prShaHead = pullRequest.get("head").get("sha").asText();
-        logger.debug("Event: Pull request #" + prNum + " " + action);
+        logger.debug("New event: Pull request #" + prNum + " " + action + ".");
 
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API,
@@ -404,10 +388,7 @@ public class GhEventService {
                 logger.debug("Creating directory: " + patchDir);
                 Files.createDirectories(patchDir);
             } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not create patches directory.", null);
-                logger.error("\u2718 Could not create patches directory: " + patchDir);
-                logger.debug("exception: ", e);
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                return setError(pullRequestContext, tipBeforeImport, "Could not create patches directory.", e);
             }
         }
 
@@ -421,10 +402,7 @@ public class GhEventService {
             git.fetch().setRemote("origin").setRefSpecs("refs/heads/" + mirrorBaseBranch).call();
             git.rebase().setUpstream("refs/heads/" + mirrorBaseBranch).call();
         } catch (GitAPIException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not sync git mirror repository.", null);
-            logger.error("\u2718 Could not sync git mirror repository.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not sync git mirror repository.", e);
         }
 
         RevCommit mostRecentUpstreamCommit;
@@ -432,10 +410,7 @@ public class GhEventService {
             mostRecentUpstreamCommit = findMostRecentUpstreamCommit(git);
         }
         catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not determine latest upstream commit in mirror.", null);
-            logger.error("\u2718 Could not determine latest upstream commit in mirror.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not determine latest upstream commit in mirror.", e);
         }
 
         JsonNode commitsJson;
@@ -443,10 +418,7 @@ public class GhEventService {
             commitsJson = fetchCommitsJson(pullRequest);
         }
         catch (IOException e) {
-            logger.error("\u2718 Could not read commits JSON.");
-            logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not read commits JSON.", tipBeforeImport);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not read commits JSON.", e);
         }
 
         // At this point we know that "mostRecentUpsteamCommit" is the latest commit from upstream to be merged into
@@ -465,21 +437,14 @@ public class GhEventService {
                 return Response.ok().build();
             }
 
-            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
-                    "Could not setup upstream equivalent commit.", tipBeforeImport);
-            logger.error("\u2718 Could not setup upstream equivalent commit.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setFailure(pullRequestContext, tipBeforeImport, "Could not convert git patch to hg patch.", e);
         }
 
         String hgPatch;
         try {
             hgPatch = convertGitPatchToHgPatch(patchDir.resolve("git.patch"));
         } catch (IOException | MessagingException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not convert git patch to hg patch.", null);
-            logger.error("\u2718 Encountered error trying to convert git patch to hg patch.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not convert git patch to hg patch.", e);
         }
 
         java.nio.file.Path hgPatchPath = patchDir.resolve("hg.patch");
@@ -487,23 +452,18 @@ public class GhEventService {
             logger.debug("Writing hg patch: " + hgPatchPath);
             Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
         } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write hg patch to file.", null);
-            logger.error("\u2718 Could not write hg patch to file.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not write hg patch to file.", e);
         }
 
-        // Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
+        // TODO Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
         // as mostRecentUpstreamCommit.
 
+        // Update upstream repository.
         try {
             PullCommand.on(Bot.upstreamRepo).execute();
             UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not sync upstream hg repository.", null);
-            logger.error("\u2718 Could not sync upstream hg repository.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not sync upstream hg repository.", e);
         }
 
         logger.debug("most recent upstream commit author: " + mostRecentUpstreamCommit.getAuthorIdent());
@@ -517,7 +477,8 @@ public class GhEventService {
             //if (mostRecentUpstreamCommit.getAuthorIdent().getEmailAddress().equals(changeset.
             // changeset.getUser()
         }
-        // Apply the hg patch to the upstream hg repo
+
+        // Apply the hg patch to the (local) upstream hg repo.
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
             // importCommand.cmdAppend("--no-commit");
@@ -526,11 +487,7 @@ public class GhEventService {
             // TODO: Could skip this by using `--bypass` argument to importCommand?
             UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
-            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl,
-                    "Could not apply PR changeset to upstream hg repository.", tipBeforeImport);
-            logger.error("\u2718 Could not apply PR changeset to upstream mercurial repository.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.BAD_REQUEST).build();
+            return setError(pullRequestContext, tipBeforeImport, "Could not apply PR changeset to upstream hg repository.", e);
         }
 
         String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
@@ -543,81 +500,165 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        // If necessary, check if user who opened PR has signed the OCA http://www.oracle.com/technetwork/community/oca-486395.html
-        String username = pullRequest.get("user").get("login").asText();
-        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, ".oca");
+        // If necessary, check if user who opened PR has signed the OCA.
+        try {
+            pullRequestContext.setOcaStatus(checkOcaStatus(pullRequestContext));
+        } catch (IOException e) {
+            return setError(pullRequestContext, tipBeforeImport, "Could not determine if user who opened PR has signed OCA.", e);
+        }
+
+        // See if there is a JBS bug associated with this PR. This is accomplished by checking if any of the following
+        // places contain the text "JDK-xxxxxxx" where x is some integer:
+        // 1.) Each commit message of the commits that make up this PR.
+        // 2.) The PR title.
+        // 3.) The branch name of this PR.
+        findReferencedJbsBugs(pullRequestContext, commitsJson);
+
+        // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
+        try {
+            runJCheck(pullRequestContext);
+        } catch (IOException e) {
+            return setError(pullRequestContext, tipBeforeImport, "Could not run jcheck.", e);
+        }
+
+        // Generate a webrev
+        try {
+            generateWebRev(pullRequestContext, previousCommit);
+        } catch (IOException e) {
+            return setError(pullRequestContext, tipBeforeImport, "Could not generate webrev for PR.", e);
+        }
+
+        // Make status page at "pr/{prNum}/{prShaHead}/index.html" from the above data (that is linked to by
+        // the jfxmirror_bot PR status check).
+        try {
+            StatusPage.createStatusPageHtml(pullRequestContext);
+        } catch (IOException e) {
+            return setError(pullRequestContext, tipBeforeImport, "Could not create status page.", e);
+        }
+
+        // Rollback upstream hg repository back to tipBeforeImport.
+        // TODO: Instead of doing this, we could create a temporary branch to work on before importing the GH PR.
+        rollback(tipBeforeImport);
+
+        // If we get this far, then we can set PR status to success.
+        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
+
+        return Response.ok().build();
+    }
+
+    private static Response setFailure(PullRequestContext pullRequestContext, String tipBeforeImport,
+                                String failureMessage, Exception exception) {
+        setPrStatus(PrStatus.FAILURE, pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(),
+                pullRequestContext.getStatusUrl(), failureMessage, tipBeforeImport);
+        logger.error("\u2718 " + failureMessage);
+        logger.debug("exception: ", exception);
+        return Response.status(Response.Status.BAD_REQUEST).build();
+    }
+
+    private static Response setError(PullRequestContext pullRequestContext, String tipBeforeImport,
+                              String errorMessage, Exception exception) {
+        setPrStatus(PrStatus.ERROR, pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(),
+                pullRequestContext.getStatusUrl(), errorMessage, tipBeforeImport);
+        logger.error("\u2718 " + errorMessage);
+        logger.debug("exception: ", exception);
+        return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+    }
+
+    private static void findReferencedJbsBugs(PullRequestContext pullRequestContext, JsonNode commitsJson) {
+        Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+        Objects.requireNonNull(commitsJson, "commitsJson must not be null");
+        logger.debug("Checking if this PR is associated with any JBS bugs...");
+        Set<String> jbsBugsReferenced = new HashSet<>();
+
+        // Check if any commit messages of this PR contain a JBS bug (like JDK-xxxxxxx).
+        for (JsonNode commitJson : commitsJson) {
+            String commitMessage = commitJson.get("commit").get("message").asText();
+            Matcher bugPatternMatcher = BUG_PATTERN.matcher(commitMessage);
+            if (bugPatternMatcher.find()) {
+                jbsBugsReferenced.add(bugPatternMatcher.group(0));
+            }
+        }
+
+        // Check if the branch name of the PR contains a JBS bug.
+        String prBranchName = pullRequestContext.getPullRequest().get("head").get("ref").asText();
+        Matcher bugMatcher = BUG_PATTERN.matcher(prBranchName);
+        if (bugMatcher.find()) {
+            jbsBugsReferenced.add(bugMatcher.group(0));
+        }
+
+        // Check if the PR title contains a JBS bug.
+        String prTitle = pullRequestContext.getPullRequest().get("title").asText();
+        bugMatcher = BUG_PATTERN.matcher(prTitle);
+        if (bugMatcher.find()) {
+            jbsBugsReferenced.add(bugMatcher.group(0));
+        }
+
+        Set<String> jbsBugsReferencedAndFound = new HashSet<>();
+        JiraRestClient jiraRestClient = CLIENT_FACTORY.create(URI.create("https://bugs.openjdk.java.net"),
+                new AnonymousAuthenticationHandler());
+        for (String jbsBug : jbsBugsReferenced) {
+            Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
+                    "project = JDK AND status IN ('Open', 'In Progress', 'New', 'Provisional') " +
+                            "AND component = javafx AND id = " + jbsBug);
+            Set<Issue> issues = Sets.newHashSet(searchJqlPromise.claim().getIssues());
+            if (!issues.isEmpty()) {
+                jbsBugsReferencedAndFound.add(jbsBug);
+            }
+        }
+        pullRequestContext.setJbsBugsReferenced(jbsBugsReferenced);
+        pullRequestContext.setJbsBugsReferencedButNotFound(Sets.difference(
+                jbsBugsReferenced, jbsBugsReferencedAndFound));
+    }
+
+    private static OcaStatus checkOcaStatus(PullRequestContext pullRequestContext) throws IOException {
+        Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+        String username = pullRequestContext.getPullRequest().get("user").get("login").asText();
+        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+                pullRequestContext.getPrNum(), ".oca");
         OcaStatus ocaStatus = NOT_FOUND_PENDING;
         if (Files.exists(ocaMarkerFile)) {
-            try {
-                String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
-                ocaStatus = OcaStatus.valueOf(ocaMarkerContents.toUpperCase(Locale.US));
-            } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                        "Could not read OCA marker file.", tipBeforeImport);
-                logger.error("\u2718 Could not read OCA marker file: " + ocaMarkerFile);
-                logger.debug("exception: ", e);
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-            }
+            String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
+            ocaStatus = OcaStatus.valueOf(ocaMarkerContents.toUpperCase(Locale.US));
             logger.debug("Already checked if \"" + username + "\" has signed the OCA.");
         } else {
             logger.debug("Checking if \"" + username + "\" has signed the OCA...");
             java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
             String ocaName;
-            try {
-                List<String> ocaFileLines = Files.readAllLines(ocaFile, UTF_8);
-                for (String line : ocaFileLines) {
-                    String[] gitHubUsernameOcaName = line.split(OCA_SEP);
-                    if (gitHubUsernameOcaName.length != 2) {
-                        setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                                "OCA signature file malformed.", tipBeforeImport);
-                        logger.error("\u2718 OCA signature file malformed (expecting separator \"" + OCA_SEP + "\").");
-                        logger.debug("Bad line: " + line);
-                        return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-                    }
-
-                    if (gitHubUsernameOcaName[0].equals(username)) {
-                        ocaName = gitHubUsernameOcaName[1];
-                        logger.info("\u2713 User who opened PR is known to have signed OCA under the name: " + ocaName);
-                        // Write a marker file for OCA status.
-                        Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
-                        ocaStatus = SIGNED;
-                        break;
-                    }
+            List<String> ocaFileLines = Files.readAllLines(ocaFile, UTF_8);
+            for (String line : ocaFileLines) {
+                String[] gitHubUsernameOcaName = line.split(OCA_SEP);
+                if (gitHubUsernameOcaName.length != 2) {
+                    throw new IOException("OCA signature file malformed (expecting separator \"" + OCA_SEP + "\")");
                 }
-            } catch (IOException e) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                        "Could not read OCA signatures file.", tipBeforeImport);
-                logger.error("\u2718 Could not read OCA signatures file.");
-                logger.debug("exception: ", e);
-                return Response.status(Response.Status.BAD_REQUEST).build();
-            }
 
+                if (gitHubUsernameOcaName[0].equals(username)) {
+                    ocaName = gitHubUsernameOcaName[1];
+                    logger.info("\u2713 User who opened PR is known to have signed OCA under the name: " + ocaName);
+                    // Write a marker file for OCA status.
+                    Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
+                    ocaStatus = SIGNED;
+                    break;
+                }
+            }
             if (ocaStatus != SIGNED) {
                 // We have no record that the user who opened this PR signed the OCA so let's check Oracle's OCA
                 // page to see if we can find their username.
                 boolean foundUsername = false;
                 String ocaLine = null;
-                try {
-                    List<String> ocaSignatures = fetchOcaSignatures();
-                    for (String ocaSignature : ocaSignatures) {
-                        // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
-                        for (String split : ocaSignature.split(" - ")) {
-                            if (split.equalsIgnoreCase(username)) {
-                                foundUsername = true;
-                                ocaLine = ocaSignature;
-                                break;
-                            }
+                List<String> ocaSignatures = fetchOcaSignatures();
+                for (String ocaSignature : ocaSignatures) {
+                    // FIXME: This is a really imperfect way to do this, but it was the best I could think of quickly.
+                    for (String split : ocaSignature.split(" - ")) {
+                        if (split.equalsIgnoreCase(username)) {
+                            foundUsername = true;
+                            ocaLine = ocaSignature;
+                            break;
                         }
                     }
-                } catch (IOException e) {
-                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                            "Could not download OCA signatures page.", tipBeforeImport);
-                    logger.error("\u2718 Could not download OCA signatures page.");
-                    logger.debug("exception: ", e);
-                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
                 }
 
-                String commentsUrl = pullRequest.get("_links").get("comments").get("href").asText();
+                String commentsUrl = pullRequestContext.getPullRequest().get("_links").get("comments")
+                        .get("href").asText();
                 String comment = "@" + username + " ";
                 if (foundUsername) {
                     try {
@@ -651,123 +692,24 @@ public class GhEventService {
                         .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()));
 
                 if (commentResponse.getStatus() == 404) {
-                    logger.error("\u2718 Could not post comment on PR #" + prNum + " for assisting the user who " +
-                            "opened the PR with confirming their signing of the OCA.");
-                    logger.debug("GitHub response: " + commentResponse.readEntity(String.class));
-                    setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                            "Could not post comment to PR.", tipBeforeImport);
-                    return Response.status(Response.Status.BAD_REQUEST).build();
+                    throw new IOException("404 from github, trying to post comment on PR: " +
+                            commentResponse.readEntity(String.class));
                 }
             }
         }
+        return ocaStatus;
+    }
 
-        // See if there is a JBS bug associated with this PR. This is accomplished by checking if any of the following
-        // places contain the text "JDK-xxxxxxx" where x is some integer:
-        // 1.) Each commit message of the commits that make up this PR.
-        // 2.) The PR title.
-        // 3.) The branch name of this PR.
-        logger.debug("Checking if this PR is associated with any JBS bugs...");
-        Set<String> jbsBugsReferenced = new HashSet<>();
-
-        // Check if any commit messages of this PR contain a JBS bug (like JDK-xxxxxxx).
-        for (JsonNode commitJson : commitsJson) {
-            String commitMessage = commitJson.get("commit").get("message").asText();
-            Matcher bugPatternMatcher = BUG_PATTERN.matcher(commitMessage);
-            if (bugPatternMatcher.find()) {
-                jbsBugsReferenced.add(bugPatternMatcher.group(0));
-            }
-        }
-
-        // Check if the branch name of the PR contains a JBS bug.
-        String prBranchName = pullRequest.get("head").get("ref").asText();
-        Matcher bugMatcher = BUG_PATTERN.matcher(prBranchName);
-        if (bugMatcher.find()) {
-            jbsBugsReferenced.add(bugMatcher.group(0));
-        }
-
-        // Check if the PR title contains a JBS bug.
-        String prTitle = pullRequest.get("title").asText();
-        bugMatcher = BUG_PATTERN.matcher(prTitle);
-        if (bugMatcher.find()) {
-            jbsBugsReferenced.add(bugMatcher.group(0));
-        }
-
-        Set<String> foundJbsBugs = new HashSet<>();
-        JiraRestClient jiraRestClient = CLIENT_FACTORY.create(URI.create("https://bugs.openjdk.java.net"),
-                new AnonymousAuthenticationHandler());
-        for (String jbsBug : jbsBugsReferenced) {
-            Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
-                    "project = JDK AND status IN ('Open', 'In Progress', 'New', 'Provisional') AND component = javafx AND id = " + jbsBug);
-            Set<Issue> issues = Sets.newHashSet(searchJqlPromise.claim().getIssues());
-            if (!issues.isEmpty()) {
-                foundJbsBugs.add(jbsBug);
-            }
-        }
-
-        Set<String> jbsBugsReferencedButNotFound = Sets.difference(jbsBugsReferenced, foundJbsBugs);
-
-        // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
-        logger.debug("Running jcheck on PR #" + prNum + " (" + prShaHead + ")...");
-        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
-                prNum, prShaHead, "jcheck.txt");
-        try {
-            Files.write(jcheckOutputPath, "".getBytes(), StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-        } catch (IOException e) {
-            logger.error("\u2718 Could not run jcheck.");
-            logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.", tipBeforeImport);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }
-        ProcessBuilder jcheckBuilder = new ProcessBuilder("hg", "jcheck")
-                .directory(Bot.upstreamRepo.getDirectory())
-                .redirectError(jcheckOutputPath.toFile())
-                .redirectOutput(jcheckOutputPath.toFile());
-
-        try {
-            Process jcheck = jcheckBuilder.start();
-            jcheck.waitFor(1, TimeUnit.MINUTES);
-        } catch (IOException | InterruptedException e) {
-            logger.error("\u2718 Could not run jcheck.");
-            logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not run jcheck.", tipBeforeImport);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-        }
-
-        // This runs jcheck by using a javahg mercurial extension. The problem is that the output is not captured
-        // via getErrorString(), so it is useless for our purposes. It would be much nicer to use than a raw hg process
-        // as we do currently.
-        /*
-        GenericCommand jcheckCommand = new GenericCommand(Bot.upstreamRepo, "jcheck");
-        String jcheckResults = null;
-        try {
-            jcheckResults = jcheckCommand.execute();
-            if (jcheckCommand.getReturnCode() == 0) {
-                jcheckResults = "Success - no warnings from jcheck.";
-            }
-        } catch (ExecutionException e) {
-            if (jcheckCommand.getReturnCode() == 1) {
-                // Expected error, this means jcheck failed.
-                logger.debug("jcheck error string: " + jcheckCommand.getErrorString());
-                jcheckResults = jcheckCommand.getErrorString();
-            } else {
-                logger.error("\u2718 Unexpected exit code from jcheck: " + jcheckCommand.getReturnCode());
-                logger.debug("exception: ", e);
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Unexpected exit code from jcheck.");
-                return Response.status(Response.Status.BAD_REQUEST).build();
-            }
-        }
-        */
-
-        // Generate a webrev
+    private static void generateWebRev(PullRequestContext pullRequestContext, String previousCommit) throws IOException {
+        Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+        Objects.requireNonNull(previousCommit, "previousCommit must not be null");
         java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"),
-                "jfxmirror", "pr", prNum, prShaHead);
-        logger.debug("Will generate webrev against revision: " + previousCommit);
+                "jfxmirror", "pr", pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead());
         ProcessBuilder webrevBuilder;
         String[] webrevBugArgs = { "", "" };
-        if (!jbsBugsReferenced.isEmpty()) {
+        if (!pullRequestContext.getJbsBugsReferenced().isEmpty()) {
             webrevBugArgs[0] = "-c";
-            webrevBugArgs[1] = jbsBugsReferenced.iterator().next().substring(4);
+            webrevBugArgs[1] = pullRequestContext.getJbsBugsReferenced().iterator().next().substring(4);
         }
         if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
@@ -776,7 +718,8 @@ public class GhEventService {
                             .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") +
                     " -r " + previousCommit + " -N -m -o " + webRevOutputPath.toString()
                     .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") +
-                    (!jbsBugsReferenced.isEmpty() ? (" " + webrevBugArgs[0] + " " + webrevBugArgs[1]) : "") + "\"";
+                    (!pullRequestContext.getJbsBugsReferenced().isEmpty() ?
+                            (" " + webrevBugArgs[0] + " " + webrevBugArgs[1]) : "") + "\"";
             webrevBuilder = new ProcessBuilder("bash", "-c", kshInvocation);
         } else {
             // Just call ksh directly.
@@ -788,60 +731,44 @@ public class GhEventService {
         webrevBuilder.directory(Bot.upstreamRepo.getDirectory());
         try {
             webrevBuilder.inheritIO();
-            logger.debug("Generating webrev for PR #" + prNum + " (" + prShaHead + ")...");
+            logger.debug("Generating webrev for PR #" + pullRequestContext.getPrNum() +
+                    " (" + pullRequestContext.getPrShaHead() + ")...");
             Process webrev = webrevBuilder.start();
             boolean webrevFinished = webrev.waitFor(2, TimeUnit.MINUTES);
             if (!webrevFinished) {
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                        "Could not generate webrev in time.", tipBeforeImport);
-                logger.error("\u2718 Could not generate webrev in time.");
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                throw new IOException("could not generate webrev in 2 minutes");
             }
-        } catch (SecurityException | IOException | InterruptedException e) {
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl,
-                    "Could not generate webrev for PR.", tipBeforeImport);
-            logger.error("\u2718 Encountered error trying to generate webrev.");
-            logger.debug("exception: ", e);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        } catch (SecurityException | InterruptedException e) {
+            throw new IOException(e);
         }
+    }
 
-        // Make status page at "pr/{prNum}/{prShaHead}" from the above data, set status to success/fail.
-        java.nio.file.Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead);
-        if (!Files.exists(statusPath)) {
-            try {
-                Files.createDirectories(statusPath);
-            } catch (IOException e) {
-                logger.error("\u2718 Could not create directory: " + statusPath);
-                logger.debug("exception: ", e);
-                setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.", tipBeforeImport);
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-            }
-        }
-
-        // Create status index page (that is linked to by the jfxmirror_bot PR status check.
-        String statusPage = StatusPage.getStatusPageHtml(prNum, prShaHead, ocaStatus,
-                jbsBugsReferenced, jbsBugsReferencedButNotFound);
+    private static void runJCheck(PullRequestContext pullRequestContext) throws IOException {
+        Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+        logger.debug("Running jcheck on PR #" + pullRequestContext.getPrNum() +
+                " (" + pullRequestContext.getPrShaHead() + ")...");
+        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+                pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(), "jcheck.txt");
+        Files.write(jcheckOutputPath, "".getBytes(), StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        ProcessBuilder jcheckBuilder = new ProcessBuilder("hg", "jcheck")
+                .directory(Bot.upstreamRepo.getDirectory())
+                .redirectError(jcheckOutputPath.toFile())
+                .redirectOutput(jcheckOutputPath.toFile());
+        Process jcheck = jcheckBuilder.start();
         try {
-            Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
-        } catch (IOException e) {
-            logger.error("\u2718 Could not write \"index.html\" to: " + statusPath);
-            logger.debug("exception: ", e);
-            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Could not write status page.", tipBeforeImport);
-            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            jcheck.waitFor(1, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            throw new IOException(e);
         }
-
-        // Rollback upstream hg repository back to tipBeforeImport.
-        // TODO: Instead of doing this, we could create a temporary branch to work on before importing the GH PR.
-        rollback(tipBeforeImport);
-
-        // If we get this far, then we can set PR status to success.
-        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
-
-        return Response.ok().build();
     }
 
     private static void writePullRequestAsPatch(Git git, PullRequestContext pullRequestContext,
                                          JsonNode commitsJson, java.nio.file.Path patchDir) throws IOException {
+        Objects.requireNonNull(git, "git must not be null");
+        Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+        Objects.requireNonNull(commitsJson, "commitsJson must not be null");
+        Objects.requireNonNull(patchDir, "patchDir must not be null");
         StringBuilder commitMessagesConcat = new StringBuilder();
         for (JsonNode commitJson : commitsJson) {
             commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
@@ -880,6 +807,7 @@ public class GhEventService {
     }
 
     private static JsonNode fetchCommitsJson(JsonNode pullRequest) throws IOException {
+        Objects.requireNonNull(pullRequest, "pullRequest must not be null");
         String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
         Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
                 .request()
@@ -890,6 +818,7 @@ public class GhEventService {
     }
 
     private static RevCommit findMostRecentUpstreamCommit(Git git) throws IOException {
+        Objects.requireNonNull(git, "git must not be null");
         RevCommit mostRecentUpstreamCommit = null;
         RevCommit latestMergeCommit = null;
 
@@ -936,6 +865,7 @@ public class GhEventService {
      * before importing.
      */
     private static void rollback(String tipToRollbackTo) {
+        Objects.requireNonNull(tipToRollbackTo, "tipToRollbackTo must not be null");
         String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         if (tipMinusOne.equals(tipToRollbackTo)) {
             logger.debug("Rolling mercurial back to rev before patch import...");
@@ -945,7 +875,6 @@ public class GhEventService {
                 logger.debug("exception: ", e);
             }
         }
-
     }
 
     private static void resetGitRepo() {
@@ -990,6 +919,11 @@ public class GhEventService {
      */
     private static void setPrStatus(PrStatus status, String prNum, String prShaHead, String statusUrl,
                                     String description, String tipBeforeImport) {
+        Objects.requireNonNull(status, "status must not be null");
+        Objects.requireNonNull(prNum, "prNum must not be null");
+        Objects.requireNonNull(prShaHead, "prShaHead must not be null");
+        Objects.requireNonNull(statusUrl, "statusUrl must not be null");
+        Objects.requireNonNull(description, "description must not be null");
         if (status != PrStatus.SUCCESS && tipBeforeImport != null) {
             rollback(tipBeforeImport);
         }
