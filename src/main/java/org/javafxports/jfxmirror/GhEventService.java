@@ -87,7 +87,8 @@ import com.google.common.collect.Sets;
 public class GhEventService {
 
     private static final String BOT_USERNAME = "jfxmirror-bot";
-    private static final java.nio.file.Path STATIC_BASE = Paths.get(System.getProperty("user.home"), "jfxmirror");
+    private static final String USER_HOME = System.getProperty("user.home");
+    private static final java.nio.file.Path STATIC_BASE = Paths.get(USER_HOME, "jfxmirror");
     private static final String OS_NAME = System.getProperty("os.name").toLowerCase(US);
     private static final String GITHUB_API = "https://api.github.com";
     private static final String GH_ACCEPT = "application/vnd.github.v3+json";
@@ -165,9 +166,7 @@ public class GhEventService {
             case "issue_comment":
                 return handleComment(event);
             case "pull_request":
-                logger.debug("Fetching tip revision before import...");
                 final String tipBeforeImport = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-1").execute();
-                logger.debug("Tip revision before import: " + tipBeforeImport);
                 // Make sure to always roll the hg repository back, otherwise handling subsequent PR events will break.
                 try {
                     return handlePullRequest(event, tipBeforeImport);
@@ -205,7 +204,7 @@ public class GhEventService {
 
         boolean commentOnPrWeCareAbout = false;
         OcaStatus ocaStatus = null;
-        File[] prDirs = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr")
+        File[] prDirs = Paths.get(USER_HOME, "jfxmirror", "pr")
                 .toFile().listFiles(File::isDirectory);
         if (prDirs != null) {
             for (File prDir : prDirs) {
@@ -254,8 +253,8 @@ public class GhEventService {
         String username = commentEvent.get("comment").get("user").get("login").asText();
         String issueUrl = commentEvent.get("issue").get("url").asText();
         String reply = "@" + username + " ";
-        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
-        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+        java.nio.file.Path ocaFile = Paths.get(USER_HOME, "jfxmirror", "oca.txt");
+        java.nio.file.Path ocaMarkerFile = Paths.get(USER_HOME, "jfxmirror", "pr",
                 commentEvent.get("issue").get("number").asText(), ".oca");
 
         Matcher firstPatternMatcher = FIRST_COMMENT_PATTERN.matcher(comment);
@@ -336,7 +335,7 @@ public class GhEventService {
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
         } else {
-            // Can't understand the response
+            // Can't understand the response.
             reply += OcaReplies.replyWhenCantUnderstandResponse();
         }
 
@@ -386,10 +385,9 @@ public class GhEventService {
         setPrStatus(PrStatus.PENDING, prNum, prShaHead, statusUrl, "Checking for upstream mergeability...", null);
 
         // Create directory that will contain the git and hg patches.
-        java.nio.file.Path patchDir = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr", prNum, prShaHead, "patch");
+        java.nio.file.Path patchDir = Paths.get(USER_HOME, "jfxmirror", "pr", prNum, prShaHead, "patch");
         if (!Files.exists(patchDir)) {
             try {
-                logger.debug("Creating directory: " + patchDir);
                 Files.createDirectories(patchDir);
             } catch (IOException e) {
                 return setError(pullRequestContext, tipBeforeImport, "Could not create patches directory.", e);
@@ -453,14 +451,10 @@ public class GhEventService {
 
         java.nio.file.Path hgPatchPath = patchDir.resolve("hg.patch");
         try {
-            logger.debug("Writing hg patch: " + hgPatchPath);
             Files.write(hgPatchPath, hgPatch.getBytes(UTF_8));
         } catch (IOException e) {
             return setError(pullRequestContext, tipBeforeImport, "Could not write hg patch to file.", e);
         }
-
-        // TODO Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
-        // as mostRecentUpstreamCommit.
 
         // Update upstream repository.
         try {
@@ -470,6 +464,8 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not sync upstream hg repository.", e);
         }
 
+        // TODO Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
+        // as mostRecentUpstreamCommit.
         logger.debug("most recent upstream commit author: " + mostRecentUpstreamCommit.getAuthorIdent());
         logger.debug("most recent upstream commit message: " + mostRecentUpstreamCommit.getFullMessage());
 
@@ -488,11 +484,11 @@ public class GhEventService {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
             // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
-            logger.debug("Updating upstream hg repository...");
             // TODO: Could skip this by using `--bypass` argument to importCommand?
             UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException | ExecutionException e) {
-            return setError(pullRequestContext, tipBeforeImport, "Could not apply PR changeset to upstream hg repository.", e);
+            return setError(pullRequestContext, tipBeforeImport,
+                    "Could not apply PR changeset to upstream hg repository.", e);
         }
 
         String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
@@ -509,24 +505,21 @@ public class GhEventService {
         try {
             pullRequestContext.setOcaStatus(checkOcaStatus(pullRequestContext));
         } catch (IOException e) {
-            return setError(pullRequestContext, tipBeforeImport, "Could not determine if user who opened PR has signed OCA.", e);
+            return setError(pullRequestContext, tipBeforeImport,
+                    "Could not determine if user who opened PR has signed OCA.", e);
         }
 
-        // See if there is a JBS bug associated with this PR. This is accomplished by checking if any of the following
-        // places contain the text "JDK-xxxxxxx" where x is some integer:
-        // 1.) Each commit message of the commits that make up this PR.
-        // 2.) The PR title.
-        // 3.) The branch name of this PR.
+        // See if there is a JBS bug associated with this PR.
         findReferencedJbsBugs(pullRequestContext, commitsJson);
 
-        // Run jcheck http://openjdk.java.net/projects/code-tools/jcheck/
+        // Run jcheck (http://openjdk.java.net/projects/code-tools/jcheck/).
         try {
             runJCheck(pullRequestContext);
         } catch (IOException e) {
             return setError(pullRequestContext, tipBeforeImport, "Could not run jcheck.", e);
         }
 
-        // Generate a webrev
+        // Generate a webrev.
         try {
             generateWebRev(pullRequestContext, previousCommit);
         } catch (IOException e) {
@@ -560,6 +553,16 @@ public class GhEventService {
         return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
     }
 
+    /**
+     * Checks to see if any JBS bugs are associated with the given pull request and updates the
+     * {@code pullRequestContext} accordingly. JBS bugs are determined to be associated with a pull
+     * request if any of the following places contain the text "JDK-xxxxxxx" where xxxxxxx is some number:
+     * <ol>
+     * <li> Each commit message of the commits that make up this PR.
+     * <li> The PR title.
+     * <li> The branch name of this PR.
+     * </ol>
+     */
     private static void findReferencedJbsBugs(PullRequestContext pullRequestContext, JsonNode commitsJson) {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         Objects.requireNonNull(commitsJson, "commitsJson must not be null");
@@ -609,7 +612,7 @@ public class GhEventService {
     private static OcaStatus checkOcaStatus(PullRequestContext pullRequestContext) throws IOException {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         String username = pullRequestContext.getPullRequest().get("user").get("login").asText();
-        java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+        java.nio.file.Path ocaMarkerFile = Paths.get(USER_HOME, "jfxmirror", "pr",
                 pullRequestContext.getPrNum(), ".oca");
         OcaStatus ocaStatus = NOT_FOUND_PENDING;
         if (Files.exists(ocaMarkerFile)) {
@@ -618,7 +621,7 @@ public class GhEventService {
             logger.debug("Already checked if \"" + username + "\" has signed the OCA.");
         } else {
             logger.debug("Checking if \"" + username + "\" has signed the OCA...");
-            java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+            java.nio.file.Path ocaFile = Paths.get(USER_HOME, "jfxmirror", "oca.txt");
             String ocaName;
             List<String> ocaFileLines = Files.readAllLines(ocaFile, UTF_8);
             for (String line : ocaFileLines) {
@@ -699,7 +702,7 @@ public class GhEventService {
     private static void generateWebRev(PullRequestContext pullRequestContext, String previousCommit) throws IOException {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         Objects.requireNonNull(previousCommit, "previousCommit must not be null");
-        java.nio.file.Path webRevOutputPath = Paths.get(System.getProperty("user.home"),
+        java.nio.file.Path webRevOutputPath = Paths.get(USER_HOME,
                 "jfxmirror", "pr", pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead());
         ProcessBuilder webrevBuilder;
         String[] webrevBugArgs = { "", "" };
@@ -710,7 +713,7 @@ public class GhEventService {
         if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
-                    Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString()
+                    Paths.get(USER_HOME, "jfxmirror", "webrev", "webrev.ksh").toString()
                             .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") +
                     " -r " + previousCommit + " -N -m -o " + webRevOutputPath.toString()
                     .replaceFirst("C:\\\\", "/mnt/c/").replaceAll("\\\\", "/") +
@@ -720,7 +723,7 @@ public class GhEventService {
         } else {
             // Just call ksh directly.
             webrevBuilder = new ProcessBuilder("ksh",
-                    Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev", "webrev.ksh").toString(),
+                    Paths.get(USER_HOME, "jfxmirror", "webrev", "webrev.ksh").toString(),
                     "-N", "-m", webrevBugArgs[0], webrevBugArgs[1],
                     "-o", webRevOutputPath.toString());
         }
@@ -743,7 +746,7 @@ public class GhEventService {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         logger.debug("Running jcheck on PR #" + pullRequestContext.getPrNum() +
                 " (" + pullRequestContext.getPrShaHead() + ")...");
-        java.nio.file.Path jcheckOutputPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
+        java.nio.file.Path jcheckOutputPath = Paths.get(USER_HOME, "jfxmirror", "pr",
                 pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(), "jcheck.txt");
         Files.write(jcheckOutputPath, "".getBytes(), StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);

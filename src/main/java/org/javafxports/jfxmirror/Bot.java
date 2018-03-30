@@ -37,6 +37,7 @@ import com.fasterxml.jackson.jaxrs.json.JacksonJaxbJsonProvider;
  * GitHub webhook events from the "javafxports/openjdk-jfx" repository.
  */
 public class Bot {
+
     protected static Client httpClient;
     protected static Repository upstreamRepo;
     protected static org.eclipse.jgit.lib.Repository mirrorRepo;
@@ -46,10 +47,11 @@ public class Bot {
     private static final String JCHECK_CONF_URL = "http://cr.openjdk.java.net/%7Ekcr/jcheck/conf";
     private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";
     private static final String UPSTREAM_REPO_URL = "http://hg.openjdk.java.net/openjfx/jfx-dev/rt";
-    private static final Path UPSTREAM_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "upstream");
+    private static final String USER_HOME = System.getProperty("user.home");
+    private static final Path UPSTREAM_REPO_PATH = Paths.get(USER_HOME, "jfxmirror", "upstream");
     // private static final String MIRROR_REPO_URL = "https://github.com/javafxports/openjdk-jfx";
     private static final String MIRROR_REPO_URL = "https://github.com/brcolow/openjdk-jfx"; // FIXME: For testing
-    private static final Path MIRROR_REPO_PATH = Paths.get(System.getProperty("user.home"), "jfxmirror", "mirror");
+    private static final Path MIRROR_REPO_PATH = Paths.get(USER_HOME, "jfxmirror", "mirror");
     private static final Logger logger = LoggerFactory.getLogger(Bot.class);
 
     private Bot() {}
@@ -104,7 +106,7 @@ public class Bot {
         logger.debug("Initialized git mirror repository: " + mirrorRepo.getDirectory());
 
         logger.debug("Checking for \"jcheck.py\"...");
-        Path jcheckPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "jcheck.py");
+        Path jcheckPath = Paths.get(USER_HOME, "jfxmirror", "jcheck.py");
         if (!Files.exists(jcheckPath)) {
             logger.debug("Downloading \"jcheck.py\"...");
             try (InputStream in = URI.create(JCHECK_URL).toURL().openStream()) {
@@ -187,7 +189,7 @@ public class Bot {
         }
 
         logger.debug("Checking for \"webrev.ksh\"...");
-        Path webrevPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "webrev");
+        Path webrevPath = Paths.get(USER_HOME, "jfxmirror", "webrev");
         if (!Files.exists(webrevPath)) {
             try {
                 Files.createDirectories(webrevPath);
@@ -213,7 +215,7 @@ public class Bot {
         }
 
         logger.debug("Checking for OCA signature file...");
-        java.nio.file.Path ocaFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "oca.txt");
+        java.nio.file.Path ocaFile = Paths.get(USER_HOME, "jfxmirror", "oca.txt");
         if (!Files.exists(ocaFile)) {
             logger.debug("Creating OCA signature file: " + ocaFile);
             try {
