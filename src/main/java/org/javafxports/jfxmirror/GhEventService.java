@@ -3,6 +3,7 @@ package org.javafxports.jfxmirror;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.StandardOpenOption.APPEND;
 import static java.util.Locale.US;
+import static java.util.regex.Pattern.CASE_INSENSITIVE;
 import static org.javafxports.jfxmirror.OcaStatus.FOUND_PENDING;
 import static org.javafxports.jfxmirror.OcaStatus.NOT_FOUND_PENDING;
 import static org.javafxports.jfxmirror.OcaStatus.SIGNED;
@@ -94,6 +95,7 @@ public class GhEventService {
     private static final String OCA_SEP = "@@@";
     private static final Pattern BUG_PATTERN = Pattern.compile("JDK-\\d\\d\\d\\d\\d\\d\\d");
     private static final Pattern DOUBLE_QUOTE_PATTERN = Pattern.compile("\"([^\"]*)\"");
+    private static final Pattern FIRST_COMMENT_PATTERN = Pattern.compile("Yes,? that'?s me", CASE_INSENSITIVE);
     private static final JiraRestClientFactory CLIENT_FACTORY = new AsynchronousJiraRestClientFactory();
     private static final Logger logger = LoggerFactory.getLogger(GhEventService.class);
 
@@ -227,6 +229,7 @@ public class GhEventService {
                         } catch (IOException e) {
                             logger.error("\u2718 Could not read OCA marker file.");
                             logger.debug("exception: ", e);
+                            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
                         }
                     }
                 }
@@ -255,7 +258,8 @@ public class GhEventService {
         java.nio.file.Path ocaMarkerFile = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
                 commentEvent.get("issue").get("number").asText(), ".oca");
 
-        if (ocaStatus == FOUND_PENDING && comment.startsWith("Yes, that's me")) {
+        Matcher firstPatternMatcher = FIRST_COMMENT_PATTERN.matcher(comment);
+        if (ocaStatus == FOUND_PENDING && firstPatternMatcher.find()) {
             reply += OcaReplies.replyWhenUserConfirmsIdentity();
             try {
                 Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
@@ -265,7 +269,7 @@ public class GhEventService {
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
-        } else if (comment.startsWith("I have signed the OCA under the name")) {
+        } else if (comment.toLowerCase(Locale.US).startsWith("i have signed the oca under the name")) {
             // Grab the name in double quotes.
             Matcher doubleQuoteMatcher = DOUBLE_QUOTE_PATTERN.matcher(comment);
             String name = null;
@@ -303,7 +307,7 @@ public class GhEventService {
                 logger.debug("exception: ", e);
                 return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
             }
-        } else if (comment.startsWith("I have now signed the OCA using my GitHub username")) {
+        } else if (comment.toLowerCase(Locale.US).startsWith("i have now signed the oca using my github username")) {
             try {
                 boolean foundUsername = false;
                 List<String> ocaSignatures = fetchOcaSignatures();
