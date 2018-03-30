@@ -437,7 +437,7 @@ public class GhEventService {
                 return Response.ok().build();
             }
 
-            return setFailure(pullRequestContext, tipBeforeImport, "Could not convert git patch to hg patch.", e);
+            return setError(pullRequestContext, tipBeforeImport, "Could not convert git patch to hg patch.", e);
         }
 
         String hgPatch;
@@ -471,7 +471,8 @@ public class GhEventService {
 
         for (Changeset changeset : LogCommand.on(Bot.upstreamRepo).limit(10).execute()) {
             // It would be nice if the git merge commit (latestMergeCommit) had the hg sha1, so we can find it by
-            // iterating over the hg changesets.
+            // iterating over the hg changesets. We could also compare the previous 2 commits and make sure their
+            // authors and commit messages match.
             logger.debug("hg changeset user: " + changeset.getUser());
             logger.debug("hg changeset message: " + changeset.getMessage());
             //if (mostRecentUpstreamCommit.getAuthorIdent().getEmailAddress().equals(changeset.
@@ -546,17 +547,8 @@ public class GhEventService {
         return Response.ok().build();
     }
 
-    private static Response setFailure(PullRequestContext pullRequestContext, String tipBeforeImport,
-                                String failureMessage, Exception exception) {
-        setPrStatus(PrStatus.FAILURE, pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(),
-                pullRequestContext.getStatusUrl(), failureMessage, tipBeforeImport);
-        logger.error("\u2718 " + failureMessage);
-        logger.debug("exception: ", exception);
-        return Response.status(Response.Status.BAD_REQUEST).build();
-    }
-
     private static Response setError(PullRequestContext pullRequestContext, String tipBeforeImport,
-                              String errorMessage, Exception exception) {
+                                     String errorMessage, Exception exception) {
         setPrStatus(PrStatus.ERROR, pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(),
                 pullRequestContext.getStatusUrl(), errorMessage, tipBeforeImport);
         logger.error("\u2718 " + errorMessage);
