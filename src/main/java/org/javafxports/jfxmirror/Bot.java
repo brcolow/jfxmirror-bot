@@ -92,11 +92,10 @@ public class Bot {
                     .setGitDir(MIRROR_REPO_PATH.resolve(".git").toFile())
                     .readEnvironment()
                     .build();
+            logger.debug("Initialized git mirror repository: " + mirrorRepo.getDirectory());
         } catch (IOException e) {
             exitWithError("Could not initialize javafxports git mirror repository.", e, 1);
         }
-
-        logger.debug("Initialized git mirror repository: " + mirrorRepo.getDirectory());
 
         logger.debug("Checking for \"jcheck.py\"...");
         Path jcheckPath = Paths.get(USER_HOME, "jfxmirror", "jcheck.py");
@@ -130,7 +129,7 @@ public class Bot {
 
             // Add the necessary hg config for using jcheck and the strip extension.
             Path hgRcPath = upstreamRepo.getDirectory().toPath().resolve(".hg").resolve("hgrc");
-            logger.debug("Adding config to \".hg/hgrc\" for using jcheck...");
+            logger.debug("Adding config to \"" + hgRcPath + "\" for using jcheck...");
             try {
                 // Use platform-specific line separator so that line endings are not mixed as we are appending to hgrc.
                 Files.write(hgRcPath, (System.lineSeparator() + "[extensions]" + System.lineSeparator() + "jcheck = " +
@@ -139,7 +138,6 @@ public class Bot {
             } catch (IOException e) {
                 exitWithError("Could not write to: " + hgRcPath, e, 1);
             }
-
             logger.debug("Added config to: \"" + hgRcPath + "\".");
         } else {
             // Repository already exists.

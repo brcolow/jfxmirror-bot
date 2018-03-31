@@ -19,7 +19,7 @@ public class OcaComments {
         return "**If you have already signed the OCA**:\n" +
                 "Add a comment on this PR saying: `@" + botUsername + " I have signed the OCA under the name {name}` " +
                 "where `{name}` is the first, name-like part of an OCA signature line. For example, the signature line " +
-                "`Michael Ennen - GlassFish Jersey - brcolow` has a first, name-like part of `Michael Ennen`.\n\n" +
+                "`John Smith - OpenJFX - jsmith` has a first, name-like part of `John Smith`.\n\n" +
                 "**If you have never signed the OCA before:**\n" +
                 "Follow the instructions at http://www.oracle.com/technetwork/community/oca-486395.html for " +
                 "doing so. Make sure to fill out the username portion of the form with your GitHub username. " +

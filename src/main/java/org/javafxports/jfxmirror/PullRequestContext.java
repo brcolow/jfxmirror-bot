@@ -1,5 +1,6 @@
 package org.javafxports.jfxmirror;
 
+import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 
@@ -51,7 +52,7 @@ public class PullRequestContext {
     }
 
     public Set<String> getJbsBugsReferenced() {
-        return jbsBugsReferenced;
+        return Collections.unmodifiableSet(jbsBugsReferenced);
     }
 
     void setJbsBugsReferenced(Set<String> jbsBugsReferenced) {
@@ -59,7 +60,7 @@ public class PullRequestContext {
     }
 
     public Set<String> getJbsBugsReferencedButNotFound() {
-        return jbsBugsReferencedButNotFound;
+        return Collections.unmodifiableSet(jbsBugsReferencedButNotFound);
     }
 
     void setJbsBugsReferencedButNotFound(Set<String> jbsBugsReferencedButNotFound) {

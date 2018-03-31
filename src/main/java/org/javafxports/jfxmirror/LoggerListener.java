@@ -1,5 +1,7 @@
 package org.javafxports.jfxmirror;
 
+import java.io.File;
+
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
@@ -15,8 +17,6 @@ import ch.qos.logback.core.spi.LifeCycle;
  * sensible platform-specific defaults are chosen.
  */
 public class LoggerListener extends ContextAwareBase implements LoggerContextListener, LifeCycle {
-    private static final String OS_NAME = System.getProperty("os.name").toLowerCase();
-    private static final String USER_HOME = System.getProperty("user.home");
     private volatile boolean started = false;
 
     @Override
@@ -28,8 +28,8 @@ public class LoggerListener extends ContextAwareBase implements LoggerContextLis
         // The "log.file.name" and "log.file.path" properties allow for changing the name/path of the log file
         // dynamically via JVM parameters (e.g. -Dlog.file.name=my_log, -Dlog.file.path="C:\\logs")
         final String logFileBaseName = System.getProperty("log.file.name", "jfxmirror");
-        final String logFilePath = System.getProperty("log.file.path", OS_NAME.contains("windows") ?
-                USER_HOME + "\\jfxmirror\\log" : USER_HOME + "/jfxmirror/log");
+        final String logFilePath = System.getProperty("log.file.path", File.separatorChar + "jfxmirror" +
+                File.separatorChar + "log");
         Context context = getContext();
         context.putProperty("LOG_FILE_PATH", logFilePath);
         context.putProperty("LOG_FILE_BASE_NAME", logFileBaseName);
