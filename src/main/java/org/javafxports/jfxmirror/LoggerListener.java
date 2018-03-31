@@ -28,8 +28,8 @@ public class LoggerListener extends ContextAwareBase implements LoggerContextLis
         // The "log.file.name" and "log.file.path" properties allow for changing the name/path of the log file
         // dynamically via JVM parameters (e.g. -Dlog.file.name=my_log, -Dlog.file.path="C:\\logs")
         final String logFileBaseName = System.getProperty("log.file.name", "jfxmirror");
-        final String logFilePath = System.getProperty("log.file.path", File.separatorChar + "jfxmirror" +
-                File.separatorChar + "log");
+        final String logFilePath = System.getProperty("log.file.path", File.separator + "jfxmirror" +
+                File.separator + "log");
         Context context = getContext();
         context.putProperty("LOG_FILE_PATH", logFilePath);
         context.putProperty("LOG_FILE_BASE_NAME", logFileBaseName);

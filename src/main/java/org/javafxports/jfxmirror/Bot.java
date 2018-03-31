@@ -226,7 +226,7 @@ public class Bot {
             logger.debug("HTTP server started, press Ctrl+C to shut down.");
             Thread.currentThread().join();
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.debug("exception: ", e);
             cleanup();
             System.exit(1);
         }
