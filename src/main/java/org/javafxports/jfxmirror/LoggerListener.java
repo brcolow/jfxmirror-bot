@@ -17,6 +17,8 @@ import ch.qos.logback.core.spi.LifeCycle;
  * sensible platform-specific defaults are chosen.
  */
 public class LoggerListener extends ContextAwareBase implements LoggerContextListener, LifeCycle {
+
+    private static final String USER_HOME = System.getProperty("user.home");
     private volatile boolean started = false;
 
     @Override
@@ -26,10 +28,10 @@ public class LoggerListener extends ContextAwareBase implements LoggerContextLis
         }
 
         // The "log.file.name" and "log.file.path" properties allow for changing the name/path of the log file
-        // dynamically via JVM parameters (e.g. -Dlog.file.name=my_log, -Dlog.file.path="C:\\logs")
+        // dynamically via JVM parameters (e.g. -Dlog.file.name=my_log, -Dlog.file.path="C:\\logs").
         final String logFileBaseName = System.getProperty("log.file.name", "jfxmirror");
-        final String logFilePath = System.getProperty("log.file.path", File.separator + "jfxmirror" +
-                File.separator + "log");
+        final String logFilePath = System.getProperty("log.file.path", USER_HOME + File.separator +
+                "jfxmirror" + File.separator + "log");
         Context context = getContext();
         context.putProperty("LOG_FILE_PATH", logFilePath);
         context.putProperty("LOG_FILE_BASE_NAME", logFileBaseName);

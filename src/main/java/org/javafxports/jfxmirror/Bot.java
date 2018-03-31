@@ -210,7 +210,7 @@ public class Bot {
             logger.info("\u2713 Found OCA signature file: \"" + ocaFile + "\"");
         }
 
-        // Jersey uses java.util.logging - bridge to slf4
+        // Jersey uses java.util.logging - bridge to slf4.
         SLF4JBridgeHandler.removeHandlersForRootLogger();
         SLF4JBridgeHandler.install();
 
@@ -259,9 +259,11 @@ public class Bot {
                     }
                     else {
                         try {
-                            port = Integer.parseInt(argsIterator.next());
+                            currentArg = argsIterator.next();
+                            port = Integer.parseInt(currentArg);
                             if (port <= 0 || port > 65535) {
                                 logger.error("\u2718 Port argument must be between 1 and 65535 but was: " + port);
+                                printUsageAndExit(2);
                             }
                         } catch (NumberFormatException e) {
                             logger.error("\u2718 Port argument must be a number but was: " + currentArg);
@@ -292,9 +294,13 @@ public class Bot {
     }
 
     protected static void cleanup() {
-        mirrorRepo.close();
-        upstreamRepo.close();
-        if (httpServer.isStarted()) {
+        if (mirrorRepo != null) {
+            mirrorRepo.close();
+        }
+        if (upstreamRepo != null) {
+            upstreamRepo.close();
+        }
+        if (httpServer != null && httpServer.isStarted()) {
             logger.debug("Stopping HTTP server...");
             httpServer.shutdownNow();
         }
