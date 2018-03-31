@@ -118,7 +118,6 @@ public class Bot {
         }
 
         RepositoryConfiguration repoConf = new RepositoryConfiguration();
-        repoConf.addExtension(JCheckExtension.class);
         if (!Files.exists(UPSTREAM_REPO_PATH)) {
             // Probably the first time running, clone the upstream OpenJFX repository.
             logger.debug("Upstream mercurial repository not found.");
