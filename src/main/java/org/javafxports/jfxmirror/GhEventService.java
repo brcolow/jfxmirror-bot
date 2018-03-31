@@ -947,7 +947,7 @@ public class GhEventService {
         }
         ObjectNode pendingStatus = JsonNodeFactory.instance.objectNode();
         pendingStatus.put("state", status.toString().toLowerCase(US));
-        pendingStatus.put("target_url", Bot.BASE_URI.resolve("pr/" + prNum + "/" + prShaHead + "/index.html")
+        pendingStatus.put("target_url", Bot.baseUri.resolve("pr/" + prNum + "/" + prShaHead + "/index.html")
                 .toASCIIString());
         pendingStatus.put("description", description);
         pendingStatus.put("context", BOT_USERNAME);

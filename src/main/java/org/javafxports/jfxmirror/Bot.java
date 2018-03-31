@@ -1,13 +1,17 @@
 package org.javafxports.jfxmirror;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.Iterator;
+import java.util.stream.Stream;
 
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
@@ -41,7 +45,8 @@ public class Bot {
     protected static Repository upstreamRepo;
     protected static org.eclipse.jgit.lib.Repository mirrorRepo;
     private static HttpServer httpServer;
-    protected static final URI BASE_URI = URI.create("http://localhost:8433/");
+    protected static URI baseUri;
+    private static int port = 8433;
     private static final String JCHECK_URL = "http://cr.openjdk.java.net/~kcr/jcheck/bin/jcheck.py";
     private static final String JCHECK_CONF_URL = "http://cr.openjdk.java.net/%7Ekcr/jcheck/conf";
     private static final String WEBREV_URL = "http://hg.openjdk.java.net/code-tools/webrev/raw-file/tip/webrev.ksh";
@@ -56,6 +61,9 @@ public class Bot {
     private Bot() {}
 
     public static void main(String[] args) {
+        parseArguments(args);
+        baseUri = URI.create("http://localhost:" + port + "/");
+
         if (System.getenv("JFXMIRROR_GH_TOKEN") == null) {
             logger.error("\u2718 \"JFXMIRROR_GH_TOKEN\" environment variable not set.");
             logger.debug("This must be set to your personal access token created for jfxmirror_bot.");
@@ -213,7 +221,7 @@ public class Bot {
                 .property(ServerProperties.TRACING_THRESHOLD, "VERBOSE")
                 .register(LoggingFeature.class)
                 .register(JacksonJaxbJsonProvider.class);
-        httpServer = GrizzlyHttpServerFactory.createHttpServer(BASE_URI, resourceConfig);
+        httpServer = GrizzlyHttpServerFactory.createHttpServer(baseUri, resourceConfig);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             cleanup();
@@ -230,6 +238,51 @@ public class Bot {
             cleanup();
             System.exit(1);
         }
+    }
+
+    private static void parseArguments(String[] args) {
+        Iterator<String> argsIterator = Stream.of(args).iterator();
+        String currentArg;
+
+        while (argsIterator.hasNext()) {
+            currentArg = argsIterator.next();
+            switch (currentArg) {
+                case "-h":
+                case "--help":
+                    printUsageAndExit(0);
+                    break;
+                case "-p":
+                case "--port":
+                    if (!argsIterator.hasNext()) {
+                        logger.error("\u2718 Expecting port number to follow argument: " + currentArg);
+                        printUsageAndExit(1);
+                    }
+                    else {
+                        try {
+                            port = Integer.parseInt(argsIterator.next());
+                            if (port <= 0 || port > 65535) {
+                                logger.error("\u2718 Port argument must be between 1 and 65535 but was: " + port);
+                            }
+                        } catch (NumberFormatException e) {
+                            logger.error("\u2718 Port argument must be a number but was: " + currentArg);
+                            printUsageAndExit(2);
+                        }
+                    }
+                    break;
+            }
+        }
+    }
+
+    private static void printUsageAndExit(int exitCode) {
+        PrintStream outStream = exitCode == 0 ? System.out : System.err;
+        outStream.println("A bot that helps contributors to the OpenJFX GitHub repository\n" +
+                "get their pull requests accepted in to the OpenJFX upstream mercurial repository.\n\n" +
+                "Usage (1): ." + File.separator + "gradlew run [ -p {port} | -h ]\n" +
+                "Usage (2): (nohup) java -jar jfxmirror_bot.jar [ -p {port} | -h ]\n\n" +
+                "  -h, --help      Show this message and exit\n" +
+                "  -p, --port      The port (1-65535) that this bot should listen on for incoming\n" +
+                "                  HTTP requests from GitHub\n\n");
+        System.exit(exitCode);
     }
 
     private static void exitWithError(String errorMessage, Exception exception, int exitCode) {
