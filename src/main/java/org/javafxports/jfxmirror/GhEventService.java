@@ -241,10 +241,11 @@ public class GhEventService {
 
         String issueBody = commentEvent.get("issue").get("body").asText().trim();
         if (!issueBody.startsWith("@" + BOT_USERNAME)) {
-            // Not a comment for us.
+            // Not a comment directed at us.
             return Response.ok().build();
         }
 
+        // Possible valid comments:
         // 1.) @jfxmirror_bot Yes, that's me
         // 2.) @jfxmirror_bot I have signed the OCA under the name \"name\"
         // 3.) @jfxmirror_bot I have now signed the OCA using my GitHub username
@@ -271,57 +272,29 @@ public class GhEventService {
         } else if (comment.toLowerCase(Locale.US).startsWith("i have signed the oca under the name")) {
             // Grab the name in double quotes.
             Matcher doubleQuoteMatcher = DOUBLE_QUOTE_PATTERN.matcher(comment);
-            String name = null;
             if (doubleQuoteMatcher.find()) {
-                name = stripQuotes(doubleQuoteMatcher.group(0));
+                String name = stripQuotes(doubleQuoteMatcher.group(0));
+                try {
+                    boolean foundName = searchOcaSignaturesFor(name);
+                    if (foundName) {
+                        reply += OcaReplies.replyWhenFoundName(name);
+                        Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
+                        Files.write(ocaFile, (username + OCA_SEP + name + "\n").getBytes(UTF_8), APPEND);
+                    } else {
+                        reply += OcaReplies.replyWhenNotFoundName(name, BOT_USERNAME);
+                    }
+                } catch (IOException e) {
+                    logger.error("\u2718 Could not download OCA signatures page.");
+                    logger.debug("exception: ", e);
+                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                }
             } else {
                 // Malformed response, did not contain a name in quotes.
                 reply += OcaReplies.replyWhenNotFoundNameInQuotes(BOT_USERNAME);
             }
-
-            try {
-                boolean foundName = false;
-                List<String> ocaSignatures = fetchOcaSignatures();
-                for (String ocaSignature : ocaSignatures) {
-                    for (String split : ocaSignature.split("-")) {
-                        if (split.trim().equalsIgnoreCase(name)) {
-                            foundName = true;
-                            break;
-                        }
-                    }
-                    if (foundName) {
-                        break;
-                    }
-                }
-
-                if (foundName) {
-                    reply += OcaReplies.replyWhenFoundName(name);
-                    Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
-                    Files.write(ocaFile, (username + OCA_SEP + name + "\n").getBytes(UTF_8), APPEND);
-                } else {
-                    reply += OcaReplies.replyWhenNotFoundName(name, BOT_USERNAME);
-                }
-            } catch (IOException e) {
-                logger.error("\u2718 Could not download OCA signatures page.");
-                logger.debug("exception: ", e);
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
-            }
         } else if (comment.toLowerCase(Locale.US).startsWith("i have now signed the oca using my github username")) {
             try {
-                boolean foundUsername = false;
-                List<String> ocaSignatures = fetchOcaSignatures();
-                for (String ocaSignature : ocaSignatures) {
-                    for (String split : ocaSignature.split("-")) {
-                        if (split.trim().equalsIgnoreCase(username)) {
-                            foundUsername = true;
-                            break;
-                        }
-                    }
-                    if (foundUsername) {
-                        break;
-                    }
-                }
-
+                boolean foundUsername = searchOcaSignaturesFor(username);
                 if (foundUsername) {
                     reply += OcaReplies.replyWhenFoundUsername();
                     Files.write(ocaMarkerFile, SIGNED.name().toLowerCase(US).getBytes(UTF_8));
@@ -547,6 +520,11 @@ public class GhEventService {
 
     private static Response setError(PullRequestContext pullRequestContext, String tipBeforeImport,
                                      String errorMessage, Exception exception) {
+        Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+        Objects.requireNonNull(tipBeforeImport, "tipBeforeImport must not be null");
+        Objects.requireNonNull(errorMessage, "errorMessage must not be null");
+        Objects.requireNonNull(exception, "exception must not be null");
+
         setPrStatus(PrStatus.ERROR, pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(),
                 pullRequestContext.getStatusUrl(), errorMessage, tipBeforeImport);
         logger.error("\u2718 " + errorMessage);
@@ -567,6 +545,7 @@ public class GhEventService {
     private static void findReferencedJbsBugs(PullRequestContext pullRequestContext, JsonNode commitsJson) {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         Objects.requireNonNull(commitsJson, "commitsJson must not be null");
+
         logger.debug("Checking if this PR is associated with any JBS bugs...");
         Set<String> jbsBugsReferenced = new HashSet<>();
 
@@ -616,6 +595,7 @@ public class GhEventService {
 
     private static OcaStatus checkOcaStatus(PullRequestContext pullRequestContext) throws IOException {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+
         String username = pullRequestContext.getPullRequest().get("user").get("login").asText();
         java.nio.file.Path ocaMarkerFile = Paths.get(USER_HOME, "jfxmirror", "pr",
                 pullRequestContext.getPrNum(), ".oca");
@@ -672,8 +652,8 @@ public class GhEventService {
                 } else {
                     Files.write(ocaMarkerFile, NOT_FOUND_PENDING.name().toLowerCase(US).getBytes(UTF_8));
                     ocaStatus = NOT_FOUND_PENDING;
-                    // Post comment on PR telling them we could not find their github username listed on OCA signature page,
-                    // ask them if they have signed it.
+                    // Post comment on PR telling them we could not find their github username listed on OCA signature
+                    // page, ask them if they have signed it.
                     comment += OcaComments.commentWhenNotFoundUsername();
                 }
                 comment += OcaComments.defaultComment(BOT_USERNAME);
@@ -696,14 +676,15 @@ public class GhEventService {
     private static void generateWebRev(PullRequestContext pullRequestContext, String previousCommit) throws IOException {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         Objects.requireNonNull(previousCommit, "previousCommit must not be null");
+
         java.nio.file.Path webRevOutputPath = Paths.get(USER_HOME,
                 "jfxmirror", "pr", pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead());
-        ProcessBuilder webrevBuilder;
         String[] webrevBugArgs = { "", "" };
         if (!pullRequestContext.getJbsBugsReferenced().isEmpty()) {
             webrevBugArgs[0] = "-c";
             webrevBugArgs[1] = pullRequestContext.getJbsBugsReferenced().iterator().next().substring(4);
         }
+        ProcessBuilder webrevBuilder;
         if (OS_NAME.contains("windows")) {
             // Calling ksh to generate webrev requires having bash in the Windows %PATH%, this works on e.g. WSL.
             String kshInvocation = "\"ksh " +
@@ -744,6 +725,7 @@ public class GhEventService {
 
     private static void runJCheck(PullRequestContext pullRequestContext) throws IOException {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
+
         logger.debug("Running jcheck on PR #" + pullRequestContext.getPrNum() +
                 " (" + pullRequestContext.getPrShaHead() + ")...");
         java.nio.file.Path jcheckOutputPath = Paths.get(USER_HOME, "jfxmirror", "pr",
@@ -774,6 +756,7 @@ public class GhEventService {
         Objects.requireNonNull(pullRequestContext, "pullRequestContext must not be null");
         Objects.requireNonNull(commitsJson, "commitsJson must not be null");
         Objects.requireNonNull(patchDir, "patchDir must not be null");
+
         StringBuilder commitMessagesConcat = new StringBuilder();
         for (JsonNode commitJson : commitsJson) {
             commitMessagesConcat.append(commitJson.get("commit").get("message").asText());
@@ -824,6 +807,7 @@ public class GhEventService {
 
     private static JsonNode fetchCommitsJson(JsonNode pullRequest) throws IOException {
         Objects.requireNonNull(pullRequest, "pullRequest must not be null");
+
         String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
         try (Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
                 .request()
@@ -836,6 +820,7 @@ public class GhEventService {
 
     private static RevCommit findMostRecentUpstreamCommit(Git git) throws IOException {
         Objects.requireNonNull(git, "git must not be null");
+
         RevCommit mostRecentUpstreamCommit = null;
         RevCommit latestMergeCommit = null;
 
@@ -883,6 +868,7 @@ public class GhEventService {
      */
     private static void rollback(String tipToRollbackTo) {
         Objects.requireNonNull(tipToRollbackTo, "tipToRollbackTo must not be null");
+
         String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         if (tipMinusOne.equals(tipToRollbackTo)) {
             logger.debug("Rolling mercurial back to rev before patch import...");
@@ -903,6 +889,18 @@ public class GhEventService {
             logger.debug("exception: ", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private boolean searchOcaSignaturesFor(String query) throws IOException {
+        List<String> ocaSignatures = fetchOcaSignatures();
+        for (String ocaSignature : ocaSignatures) {
+            for (String split : ocaSignature.split("-")) {
+                if (split.trim().equalsIgnoreCase(query)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -942,6 +940,7 @@ public class GhEventService {
         Objects.requireNonNull(prShaHead, "prShaHead must not be null");
         Objects.requireNonNull(statusUrl, "statusUrl must not be null");
         Objects.requireNonNull(description, "description must not be null");
+
         if (status != PrStatus.SUCCESS && tipBeforeImport != null) {
             rollback(tipBeforeImport);
         }
@@ -972,6 +971,8 @@ public class GhEventService {
      * Based on https://github.com/mozilla/moz-git-tools/blob/master/git-patch-to-hg-patch
      */
     private static String convertGitPatchToHgPatch(java.nio.file.Path gitPatchPath) throws IOException, MessagingException {
+        Objects.requireNonNull(gitPatchPath, "gitPatchPath must not be null");
+
         String gitPatch = new String(Files.readAllBytes(gitPatchPath), StandardCharsets.UTF_8);
         Session session = Session.getDefaultInstance(new Properties());
         MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(UTF_8)));
@@ -990,6 +991,8 @@ public class GhEventService {
      * Convenience method that makes it a bit nicer to work with email message headers.
      */
     private static Map<String, String> enumToMap(Enumeration<Header> headers) {
+        Objects.requireNonNull(headers, "headers must not be null");
+
         HashMap<String, String> headersMap = new HashMap<>();
         while (headers.hasMoreElements()) {
             Header header = headers.nextElement();
@@ -1010,6 +1013,8 @@ public class GhEventService {
      * @return the result of removing the quotes from the given {@code String}
      */
     private static String stripQuotes(String string) {
+        Objects.requireNonNull(string, "string must not be null");
+
         if (string.length() >= 2 && string.charAt(0) == '"' && string.charAt(string.length() - 1) == '"') {
             return string.substring(1, string.length() - 1);
         }
