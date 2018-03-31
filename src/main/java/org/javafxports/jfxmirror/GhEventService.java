@@ -339,17 +339,18 @@ public class GhEventService {
             reply += OcaReplies.replyWhenCantUnderstandResponse();
         }
 
-        Response commentResponse = Bot.httpClient.target(issueUrl)
+        try (Response commentResponse = Bot.httpClient.target(issueUrl)
                 .request()
                 .header("Authorization", "token " + GH_ACCESS_TOKEN)
                 .accept(GH_ACCEPT)
-                .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", reply)));
-
-        if (commentResponse.getStatus() == 404) {
-            logger.error("\u2718 Could not post comment on PR #" + commentEvent.get("issue").get("number"));
-            logger.debug("GitHub response: " + commentResponse.readEntity(String.class));
-            return Response.status(Response.Status.BAD_REQUEST).build();
+                .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", reply)))) {
+            if (commentResponse.getStatus() == 404) {
+                logger.error("\u2718 Could not post comment on PR #" + commentEvent.get("issue").get("number"));
+                logger.debug("GitHub response: " + commentResponse.readEntity(String.class));
+                return Response.status(Response.Status.BAD_REQUEST).build();
+            }
         }
+
         return Response.ok().build();
     }
 
@@ -593,22 +594,20 @@ public class GhEventService {
         }
 
         Set<String> jbsBugsReferencedAndFound = new HashSet<>();
-        JiraRestClient jiraRestClient = CLIENT_FACTORY.create(URI.create("https://bugs.openjdk.java.net"),
-                new AnonymousAuthenticationHandler());
-        for (String jbsBug : jbsBugsReferenced) {
-            Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
-                    "project = JDK AND status IN ('Open', 'In Progress', 'New', 'Provisional') " +
-                            "AND component = javafx AND id = " + jbsBug);
-            Set<Issue> issues = Sets.newHashSet(searchJqlPromise.claim().getIssues());
-            if (!issues.isEmpty()) {
-                jbsBugsReferencedAndFound.add(jbsBug);
+        try (JiraRestClient jiraRestClient = CLIENT_FACTORY.create(URI.create("https://bugs.openjdk.java.net"),
+                new AnonymousAuthenticationHandler())) {
+            for (String jbsBug : jbsBugsReferenced) {
+                Promise<SearchResult> searchJqlPromise = jiraRestClient.getSearchClient().searchJql(
+                        "project = JDK AND status IN ('Open', 'In Progress', 'New', 'Provisional') " +
+                                "AND component = javafx AND id = " + jbsBug);
+                Set<Issue> issues = Sets.newHashSet(searchJqlPromise.claim().getIssues());
+                if (!issues.isEmpty()) {
+                    jbsBugsReferencedAndFound.add(jbsBug);
+                }
             }
-        }
-        pullRequestContext.setJbsBugsReferenced(jbsBugsReferenced);
-        pullRequestContext.setJbsBugsReferencedButNotFound(Sets.difference(
-                jbsBugsReferenced, jbsBugsReferencedAndFound));
-        try {
-            jiraRestClient.close();
+            pullRequestContext.setJbsBugsReferenced(jbsBugsReferenced);
+            pullRequestContext.setJbsBugsReferencedButNotFound(Sets.difference(
+                    jbsBugsReferenced, jbsBugsReferencedAndFound));
         } catch (IOException e) {
             logger.debug("exception: ", e);
             throw new RuntimeException(e);
@@ -679,18 +678,16 @@ public class GhEventService {
                 }
                 comment += OcaComments.defaultComment(BOT_USERNAME);
 
-                Response commentResponse = Bot.httpClient.target(commentsUrl)
+                try (Response commentResponse = Bot.httpClient.target(commentsUrl)
                         .request()
                         .header("Authorization", "token " + GH_ACCESS_TOKEN)
                         .accept(GH_ACCEPT)
-                        .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()));
-
-                if (commentResponse.getStatus() == 404) {
-                    throw new IOException("404 from github, trying to post comment on PR: " +
-                            commentResponse.readEntity(String.class));
+                        .post(Entity.json(JsonNodeFactory.instance.objectNode().put("body", comment).toString()))) {
+                    if (commentResponse.getStatus() == 404) {
+                        throw new IOException("404 from github, trying to post comment on PR: " +
+                                commentResponse.readEntity(String.class));
+                    }
                 }
-
-                commentResponse.close();
             }
         }
         return ocaStatus;
@@ -828,14 +825,13 @@ public class GhEventService {
     private static JsonNode fetchCommitsJson(JsonNode pullRequest) throws IOException {
         Objects.requireNonNull(pullRequest, "pullRequest must not be null");
         String commitsUrl = pullRequest.get("_links").get("commits").get("href").asText();
-        Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
+        try (Response commitsResponse = Bot.httpClient.target(commitsUrl + "?per_page=250")
                 .request()
                 .header("Authorization", "token " + GH_ACCESS_TOKEN)
                 .accept(GH_ACCEPT)
-                .get();
-        JsonNode result = new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
-        commitsResponse.close();
-        return result;
+                .get()) {
+            return new ObjectMapper().readTree(commitsResponse.readEntity(String.class));
+        }
     }
 
     private static RevCommit findMostRecentUpstreamCommit(Git git) throws IOException {
@@ -956,21 +952,18 @@ public class GhEventService {
         pendingStatus.put("description", description);
         pendingStatus.put("context", BOT_USERNAME);
 
-        Response statusResponse = Bot.httpClient.target(statusUrl)
+        try (Response statusResponse = Bot.httpClient.target(statusUrl)
                 .request()
                 .header("Authorization", "token " + GH_ACCESS_TOKEN)
                 .accept(GH_ACCEPT)
-                .post(Entity.json(pendingStatus.toString()));
-
-        if (statusResponse.getStatus() == 404) {
-            logger.error("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
-                    "environment variable is set correctly?");
-            statusResponse.close();
-            Bot.cleanup();
-            System.exit(1);
+                .post(Entity.json(pendingStatus.toString()))) {
+            if (statusResponse.getStatus() == 404) {
+                logger.error("GitHub API authentication failed, are you sure the \"jfxmirror_gh_token\"\n" +
+                        "environment variable is set correctly?");
+                Bot.cleanup();
+                System.exit(1);
+            }
         }
-
-        statusResponse.close();
     }
 
     /**

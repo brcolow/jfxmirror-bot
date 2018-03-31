@@ -71,17 +71,15 @@ public class Bot {
         // github access token is invalid when a PR event comes in.
 
         if (!Files.exists(MIRROR_REPO_PATH)) {
-            try {
-                // Probably the first time running, clone the git mirror repository.
+            // Probably the first time running, clone the git mirror repository.
+            try (Git ignored = Git.cloneRepository()
+                    .setURI(MIRROR_REPO_URL)
+                    .setDirectory(MIRROR_REPO_PATH.toFile())
+                    .call()) {
                 logger.debug("Git mirror repository not found.");
                 logger.debug("Cloning git mirror repository...");
                 logger.debug("This may take a while (like 20 or more minutes) as the OpenJFX repository is large.");
-                Git git = Git.cloneRepository()
-                        .setURI(MIRROR_REPO_URL)
-                        .setDirectory(MIRROR_REPO_PATH.toFile())
-                        .call();
                 logger.debug("Cloned git mirror repository to: " + MIRROR_REPO_PATH);
-                git.close();
             } catch (GitAPIException e) {
                 exitWithError("Could not clone javafxports git mirror repository.", e, 1);
             }
