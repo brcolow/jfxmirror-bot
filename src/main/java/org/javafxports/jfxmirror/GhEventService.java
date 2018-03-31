@@ -149,6 +149,7 @@ public class GhEventService {
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public Response handleGhEvent(ObjectNode event, @Context ContainerRequestContext requestContext) {
+        // TODO: Verify that the request is actually from github?
         MultivaluedMap<String, String> headers = requestContext.getHeaders();
         if (!headers.containsKey("X-GitHub-Event") || headers.get("X-GitHub-Event").size() != 1) {
             logger.error("Got POST to /pr but request did not have \"X-GitHub-Event\" header");
@@ -456,7 +457,6 @@ public class GhEventService {
         // Apply the hg patch to the (local) upstream hg repo.
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
-            // importCommand.cmdAppend("--no-commit");
             importCommand.execute(hgPatchPath.toFile());
             // TODO: Could skip this by using `--bypass` argument to importCommand?
             UpdateCommand.on(Bot.upstreamRepo).execute();
@@ -469,7 +469,7 @@ public class GhEventService {
         logger.debug("Previous commit (after import): " + previousCommit);
         if (!previousCommit.equals(tipBeforeImport)) {
             logger.error("\u2718 The tip before importing is not equal to the previous commit!");
-            logger.debug("This can happen if the hg repository was not rolled back after importing GitHub PR.");
+            logger.debug("This can happen if the hg repository was not rolled back after importing a GitHub PR.");
             logger.debug("This requires manual intervention - the hg repository must be rolled back.");
             setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Upstream hg repository error.", null);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
