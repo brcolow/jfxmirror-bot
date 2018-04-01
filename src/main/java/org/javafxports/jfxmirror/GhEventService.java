@@ -359,7 +359,6 @@ public class GhEventService {
         String prNum = pullRequest.get("number").asText();
         String prShaHead = pullRequest.get("head").get("sha").asText();
         logger.debug("New event: Pull request #" + prNum + " " + action + ".");
-
         String[] repoFullName = pullRequestEvent.get("repository").get("full_name").asText().split("/");
         String statusUrl = String.format("%s/repos/%s/%s/statuses/%s", GITHUB_API,
                 repoFullName[0], repoFullName[1], prShaHead);
@@ -378,12 +377,10 @@ public class GhEventService {
             }
         }
 
-        // Find the most recent merge commit from "javafxports-github-bot" so that we can use it to sync the upstream
-        // hg repository so that the exported git patch and imported hg patch are referencing the same repository state.
         Git git = new Git(Bot.mirrorRepo);
 
         String mirrorBaseBranch = "master"; // FIXME: May want to switch to "develop"
-        // Sync the local repository with github.
+        // Update the local git repository (fetching any new changes from github remote).
         try {
             git.fetch().setRemote("origin").setRefSpecs("refs/heads/" + mirrorBaseBranch).call();
             git.rebase().setUpstream("refs/heads/" + mirrorBaseBranch).call();
@@ -391,14 +388,18 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not sync git mirror repository.", e);
         }
 
+        // The git mirror repository can lag behind the upstream hg repository because it is only synced daily. So,
+        // first we need to find the most recent commit from upstream that has been merged in to the mirror.
         RevCommit mostRecentUpstreamCommit;
         try {
             mostRecentUpstreamCommit = findMostRecentUpstreamCommit(git);
         }
         catch (IOException e) {
-            return setError(pullRequestContext, tipBeforeImport, "Could not determine latest upstream commit in mirror.", e);
+            return setError(pullRequestContext, tipBeforeImport,
+                    "Could not determine latest upstream commit in mirror.", e);
         }
 
+        // Fetch the commits array from the pull request JSON sent by GitHub.
         JsonNode commitsJson;
         try {
             commitsJson = fetchCommitsJson(pullRequest);
@@ -407,10 +408,8 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not read commits JSON.", e);
         }
 
-        // At this point we know that "mostRecentUpsteamCommit" is the latest commit from upstream to be merged into
-        // the git mirror repository. Thus we use that for our head for constructing the git patch. But first we
-        // need to remove any "blacklisted" files from the commit (files that are only present on the mirror, and never
-        // on upstream).
+        // Construct a diff between "mostRecentUpstreamCommit" (the most recent commit from upstream that has been
+        // merged in to the mirror) and the changes introduced in the PR, producing a git formatted patch file.
         try {
             writePullRequestAsPatch(git, pullRequestContext, commitsJson, patchDir);
         } catch (IOException e) {
@@ -426,6 +425,7 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not convert git patch to hg patch.", e);
         }
 
+        // Convert the git formatted patch file to an hg formatted patch file.
         String hgPatch;
         try {
             hgPatch = convertGitPatchToHgPatch(patchDir.resolve("git.patch"));
@@ -440,16 +440,18 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not write hg patch to file.", e);
         }
 
-        // Update upstream repository.
+        // Update our local upstream repository (i.e. fetch new changesets from the hg.openjdk.java.net/openjfx remote.
         try {
             PullCommand.on(Bot.upstreamRepo).execute();
             UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException e) {
-            return setError(pullRequestContext, tipBeforeImport, "Could not sync upstream hg repository.", e);
+            return setError(pullRequestContext, tipBeforeImport, "Could not update upstream hg repository.", e);
         }
 
         // TODO Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
-        // as mostRecentUpstreamCommit.
+        // as mostRecentUpstreamCommit so that conflicts when applying the patch are reduced to a minimum. In order to
+        // do this, we need to find the commit in the hg repo. This is harder than it needs to be because we don't have
+        // the commit hash, so we can rely only on author and commit message.
         logger.debug("most recent upstream commit author: " + mostRecentUpstreamCommit.getAuthorIdent());
         logger.debug("most recent upstream commit message: " + mostRecentUpstreamCommit.getFullMessage());
 
@@ -463,7 +465,7 @@ public class GhEventService {
             // changeset.getUser()
         }
 
-        // Apply the hg patch to the (local) upstream hg repo.
+        // Apply the hg patch to our local upstream hg repo.
         try {
             ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
             importCommand.execute(hgPatchPath.toFile());
@@ -476,6 +478,7 @@ public class GhEventService {
 
         String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         logger.debug("Previous commit (after import): " + previousCommit);
+        // TODO: In what cases does this fail?
         if (!previousCommit.equals(tipBeforeImport)) {
             logger.error("\u2718 The tip before importing is not equal to the previous commit!");
             logger.debug("This can happen if the hg repository was not rolled back after importing a GitHub PR.");
@@ -484,7 +487,7 @@ public class GhEventService {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
-        // If necessary, check if user who opened PR has signed the OCA.
+        // If necessary, check if user who opened the PR has signed the OCA.
         try {
             pullRequestContext.setOcaStatus(checkOcaStatus(pullRequestContext));
         } catch (IOException e) {
@@ -495,21 +498,21 @@ public class GhEventService {
         // See if there is a JBS bug associated with this PR.
         findReferencedJbsBugs(pullRequestContext, commitsJson);
 
-        // Run jcheck (http://openjdk.java.net/projects/code-tools/jcheck/).
+        // Run jcheck against the PR's changes (http://openjdk.java.net/projects/code-tools/jcheck/).
         try {
             runJCheck(pullRequestContext);
         } catch (IOException e) {
             return setError(pullRequestContext, tipBeforeImport, "Could not run jcheck.", e);
         }
 
-        // Generate a webrev.
+        // Generate a webrev with the PR's changes.
         try {
             generateWebRev(pullRequestContext, previousCommit);
         } catch (IOException e) {
             return setError(pullRequestContext, tipBeforeImport, "Could not generate webrev for PR.", e);
         }
 
-        // Make status page at "pr/{prNum}/{prShaHead}/index.html" from the above data (that is linked to by
+        // Create the status page "pr/{prNum}/{prShaHead}/index.html" from the above data (that is linked to by
         // the jfxmirror_bot PR status check).
         try {
             StatusPage.createStatusPageHtml(pullRequestContext);
@@ -517,7 +520,7 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not create status page.", e);
         }
 
-        // Rollback upstream hg repository back to tipBeforeImport.
+        // Rollback upstream hg repository to "tipBeforeImport".
         // TODO: Instead of doing this, we could create a temporary branch to work on before importing the GH PR.
         rollback(tipBeforeImport);
 
@@ -783,7 +786,9 @@ public class GhEventService {
             // Squash all commits in the PR to one (concatenate commit messages).
             git.reset().setMode(ResetCommand.ResetType.SOFT).setRef(Bot.mirrorRepo.resolve(
                     "HEAD^" + commitsJson.size()).getName()).call();
-            // I don't think jgit supports globs, so every file is listed individually.
+            // Remove any "blacklisted" files (files that are specific to the mirror git repository (such as CI infrastructure,
+            // GitHub contributing/README files, etc.) From what we could determine, jgit does not support globs
+            // (e.g. ".ci/**"), so every file must be listed individually.
             git.reset().setRef(Constants.HEAD).addPath(".travis.yml").addPath("appveyor.yml")
                     .addPath(".github/README.md").addPath(".github/CONTRIBUTING.md").addPath(".ci/before_install.sh")
                     .addPath(".ci/script.sh").call();
@@ -791,7 +796,7 @@ public class GhEventService {
                         .setAuthor(latestCommitOfPr.getAuthorIdent())
                         .setCommitter(latestCommitOfPr.getCommitterIdent())
                         .setAllowEmpty(false).call();
-            // Now the PR is made up of one squashed commit, and blacklisted files are removed. So we use
+            // Now the PR is made up of one squashed commit and blacklisted files are removed. So we use
             // "git format-patch" to convert the squashed commit into a single patch file. We use the git process
             // here because jgit does not make it easy to write a patch file.
             ProcessBuilder gitProcessBuilder = new ProcessBuilder("git", "format-patch", "-1", squashedCommit.getName(),
