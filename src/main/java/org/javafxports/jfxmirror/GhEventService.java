@@ -54,6 +54,7 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.RefSpec;
+import org.glassfish.grizzly.http.server.Request;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -148,8 +149,16 @@ public class GhEventService {
     @Path("/ghevent")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    public Response handleGhEvent(ObjectNode event, @Context ContainerRequestContext requestContext) {
+    public Response handleGhEvent(ObjectNode event,
+                                  @Context Request request,
+                                  @Context ContainerRequestContext requestContext) {
         // TODO: Verify that the request is actually from github?
+        // TODO: Currently we are using ngrok for testing, so these are not github. Inspect them for real when we use
+        // a publicly visible server.
+        logger.debug("Remote addr: " + request.getRemoteAddr());
+        logger.debug("Remote host: " + request.getRemoteHost());
+        logger.debug("Remote user: " + request.getRemoteUser());
+        logger.debug("Sceme: " + request.getScheme());
         MultivaluedMap<String, String> headers = requestContext.getHeaders();
         if (!headers.containsKey("X-GitHub-Event") || headers.get("X-GitHub-Event").size() != 1) {
             logger.error("Got POST to /pr but request did not have \"X-GitHub-Event\" header");
