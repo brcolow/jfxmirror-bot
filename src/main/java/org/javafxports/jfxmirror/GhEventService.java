@@ -450,34 +450,17 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not update upstream hg repository.", e);
         }
 
-        // TODO Before we apply the hg patch...we should make sure the local hg upstream repo is at the same commit
-        // as mostRecentUpstreamCommit so that conflicts when applying the patch are reduced to a minimum. In order to
-        // do this, we need to find the commit in the hg repo. This is harder than it needs to be because we don't have
-        // the commit hash, so we can rely only on author and commit message.
-        // TODO: Or...should we just apply the hg patch to the tip of openjfx remote? Since this whole check is about
-        // "mergeability", that would ensure that conflicts don't happen when merging to upstream...
-        // After importing the patch, we should check if any *.rej files are present and if they are, set the PR status
-        // to FAILURE with reason "Changes did not merge cleanly into upstream" and have the status page show a pretty
-        // 3-way diff.
-        logger.debug("most recent upstream commit author: " + mostRecentUpstreamCommit.getAuthorIdent());
-        logger.debug("most recent upstream commit message: " + mostRecentUpstreamCommit.getFullMessage());
-
-        for (Changeset changeset : LogCommand.on(Bot.upstreamRepo).limit(10).execute()) {
-            // It would be nice if the git merge commit (latestMergeCommit) had the hg sha1, so we can find it by
-            // iterating over the hg changesets. We could also compare the previous 2 commits and make sure their
-            // authors and commit messages match.
-            logger.debug("hg changeset user: " + changeset.getUser());
-            logger.debug("hg changeset message: " + changeset.getMessage());
-            //if (mostRecentUpstreamCommit.getAuthorIdent().getEmailAddress().equals(changeset.
-            // changeset.getUser()
-        }
-
+        // Apply the hg patch to the tip of openjfx remote, since this whole check is about
+        // "mergeability", that would ensure that conflicts don't happen when merging to upstream.
         // Apply the hg patch to our local upstream hg repo.
         try {
-            applyHgPatch(hgPatchPath);
+            List<java.nio.file.Path> rejects = applyHgPatch(hgPatchPath);
+            if (!rejects.isEmpty()) {
+                logger.debug("Found rejects: " + rejects);
+            }
         } catch (IOException | ExecutionException e) {
             return setError(pullRequestContext, tipBeforeImport,
-                    "Could not apply PR changeset to upstream hg repository.", e);
+                    "Could not apply PR changes to upstream hg repository.", e);
         }
 
         // hg identify --rev -2
@@ -535,29 +518,30 @@ public class GhEventService {
         return Response.ok().build();
     }
 
-    private void applyHgPatch(java.nio.file.Path hgPatchPath) throws IOException {
+    private List<java.nio.file.Path> applyHgPatch(java.nio.file.Path hgPatchPath) throws IOException {
         ProcessBuilder importBuilder = new ProcessBuilder("hg", "import", hgPatchPath.toString(), "--bypass")
                 .redirectErrorStream(true)
                 .directory(Bot.upstreamRepo.getDirectory());
-        Process jcheck = importBuilder.start();
-        String hgOut = new String(jcheck.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        Process hgImport = importBuilder.start();
+        String hgOut = new String(hgImport.getInputStream().readAllBytes(), UTF_8);
+        final List<java.nio.file.Path> rejects = new ArrayList<>();
         if (hgOut.contains("abort: patch failed to apply")) {
             logger.debug("Mercurial patch did not apply cleanly, searching for rejects...");
-            Set<java.nio.file.Path> rejects = Files.find(Bot.upstreamRepo.getDirectory().toPath(), 30, (p, bfa) ->
-                    bfa.isRegularFile() && p.toString().endsWith(".rej")).collect(Collectors.toSet());
-            logger.debug("Found rejects: " + rejects);
+            rejects.addAll(Files.find(Bot.upstreamRepo.getDirectory().toPath(), 30, (p, bfa) ->
+                    bfa.isRegularFile() && p.toString().endsWith(".rej")).collect(Collectors.toList());
         }
         try {
-            boolean finished = jcheck.waitFor(1, TimeUnit.MINUTES);
+            boolean finished = hgImport.waitFor(1, TimeUnit.MINUTES);
             if (!finished) {
-                jcheck.destroyForcibly();
-                throw new IOException("could not run jcheck in 1 minute");
+                hgImport.destroyForcibly();
+                throw new IOException("could not apply hg patch in 1 minute");
             }
         } catch (InterruptedException e) {
-            jcheck.destroyForcibly();
+            hgImport.destroyForcibly();
             throw new IOException(e);
         }
-        jcheck.destroy();
+        hgImport.destroy();
+        return rejects;
     }
 
     private static Response setError(PullRequestContext pullRequestContext, String tipBeforeImport,
@@ -643,7 +627,7 @@ public class GhEventService {
                 pullRequestContext.getPrNum(), ".oca");
         OcaStatus ocaStatus = NOT_FOUND_PENDING;
         if (Files.exists(ocaMarkerFile)) {
-            String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), StandardCharsets.UTF_8);
+            String ocaMarkerContents = new String(Files.readAllBytes(ocaMarkerFile), UTF_8);
             ocaStatus = OcaStatus.valueOf(ocaMarkerContents.toUpperCase(Locale.US));
             logger.debug("Already checked if \"" + username + "\" has signed the OCA.");
         } else {
@@ -1019,7 +1003,7 @@ public class GhEventService {
     private static String convertGitPatchToHgPatch(java.nio.file.Path gitPatchPath) throws IOException, MessagingException {
         Objects.requireNonNull(gitPatchPath, "gitPatchPath must not be null");
 
-        String gitPatch = new String(Files.readAllBytes(gitPatchPath), StandardCharsets.UTF_8);
+        String gitPatch = new String(Files.readAllBytes(gitPatchPath), UTF_8);
         Session session = Session.getDefaultInstance(new Properties());
         MimeMessage emailMessage = new MimeMessage(session, new ByteArrayInputStream(gitPatch.getBytes(UTF_8)));
         Map<String, String> headers = enumToMap(emailMessage.getAllHeaders());
