@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import javax.mail.Header;
 import javax.mail.MessagingException;
@@ -440,8 +441,9 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not write hg patch to file.", e);
         }
 
-        // Update our local upstream repository (i.e. fetch new changesets from the hg.openjdk.java.net/openjfx remote.
+        // Update our local upstream repository (i.e. fetch new changesets from the hg.openjdk.java.net/openjfx remote).
         try {
+            // hg pull && hg update
             PullCommand.on(Bot.upstreamRepo).execute();
             UpdateCommand.on(Bot.upstreamRepo).execute();
         } catch (IOException e) {
@@ -452,6 +454,11 @@ public class GhEventService {
         // as mostRecentUpstreamCommit so that conflicts when applying the patch are reduced to a minimum. In order to
         // do this, we need to find the commit in the hg repo. This is harder than it needs to be because we don't have
         // the commit hash, so we can rely only on author and commit message.
+        // TODO: Or...should we just apply the hg patch to the tip of openjfx remote? Since this whole check is about
+        // "mergeability", that would ensure that conflicts don't happen when merging to upstream...
+        // After importing the patch, we should check if any *.rej files are present and if they are, set the PR status
+        // to FAILURE with reason "Changes did not merge cleanly into upstream" and have the status page show a pretty
+        // 3-way diff.
         logger.debug("most recent upstream commit author: " + mostRecentUpstreamCommit.getAuthorIdent());
         logger.debug("most recent upstream commit message: " + mostRecentUpstreamCommit.getFullMessage());
 
@@ -467,15 +474,13 @@ public class GhEventService {
 
         // Apply the hg patch to our local upstream hg repo.
         try {
-            ImportCommand importCommand = ImportCommand.on(Bot.upstreamRepo);
-            importCommand.execute(hgPatchPath.toFile());
-            // TODO: Could skip this by using `--bypass` argument to importCommand?
-            UpdateCommand.on(Bot.upstreamRepo).execute();
+            applyHgPatch(hgPatchPath);
         } catch (IOException | ExecutionException e) {
             return setError(pullRequestContext, tipBeforeImport,
                     "Could not apply PR changeset to upstream hg repository.", e);
         }
 
+        // hg identify --rev -2
         String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         logger.debug("Previous commit (after import): " + previousCommit);
         // TODO: In what cases does this fail?
@@ -528,6 +533,31 @@ public class GhEventService {
         setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
 
         return Response.ok().build();
+    }
+
+    private void applyHgPatch(java.nio.file.Path hgPatchPath) throws IOException {
+        ProcessBuilder importBuilder = new ProcessBuilder("hg", "import", hgPatchPath.toString(), "--bypass")
+                .redirectErrorStream(true)
+                .directory(Bot.upstreamRepo.getDirectory());
+        Process jcheck = importBuilder.start();
+        String hgOut = new String(jcheck.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (hgOut.contains("abort: patch failed to apply")) {
+            logger.debug("Mercurial patch did not apply cleanly, searching for rejects...");
+            Set<java.nio.file.Path> rejects = Files.find(Bot.upstreamRepo.getDirectory().toPath(), 30, (p, bfa) ->
+                    bfa.isRegularFile() && p.toString().endsWith(".rej")).collect(Collectors.toSet());
+            logger.debug("Found rejects: " + rejects);
+        }
+        try {
+            boolean finished = jcheck.waitFor(1, TimeUnit.MINUTES);
+            if (!finished) {
+                jcheck.destroyForcibly();
+                throw new IOException("could not run jcheck in 1 minute");
+            }
+        } catch (InterruptedException e) {
+            jcheck.destroyForcibly();
+            throw new IOException(e);
+        }
+        jcheck.destroy();
     }
 
     private static Response setError(PullRequestContext pullRequestContext, String tipBeforeImport,
@@ -883,10 +913,12 @@ public class GhEventService {
     private static void rollback(String tipToRollbackTo) {
         Objects.requireNonNull(tipToRollbackTo, "tipToRollbackTo must not be null");
 
+        // hg identify --rev -2
         String tipMinusOne = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
         if (tipMinusOne.equals(tipToRollbackTo)) {
             logger.debug("Rolling mercurial back to rev before patch import...");
             try {
+                // hg strip --rev -1 --no-backup
                 StripCommand.on(Bot.upstreamRepo).rev("-1").noBackup().execute();
             } catch (Exception e) {
                 logger.debug("exception: ", e);
