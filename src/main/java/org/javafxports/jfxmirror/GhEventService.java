@@ -481,13 +481,10 @@ public class GhEventService {
 
         // hg identify --rev -2
         String previousCommit = IdentifyCommand.on(Bot.upstreamRepo).id().rev("-2").execute();
-        logger.debug("Previous commit (after import): " + previousCommit);
         // TODO: In what cases does this fail?
         if (!previousCommit.equals(tipBeforeImport)) {
             logger.error("\u2718 The tip before importing is not equal to the previous commit!");
-            logger.debug("This can happen if the hg repository was not rolled back after importing a GitHub PR.");
-            logger.debug("This requires manual intervention - the hg repository must be rolled back.");
-            setPrStatus(PrStatus.FAILURE, prNum, prShaHead, statusUrl, "Upstream hg repository error.", null);
+            setPrStatus(PrStatus.ERROR, prNum, prShaHead, statusUrl, "Upstream hg repository error.", null);
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
         }
 
