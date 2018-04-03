@@ -7,11 +7,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collection;
+import java.util.List;
 import java.util.stream.Collectors;
 
 public class StatusPage {
 
     public static void createStatusPageHtml(PullRequestContext pullRequestContext) throws IOException {
+        // assert (pullRequestContext.getPrStatus() == SUCCESS || FAILURE)
         Path statusPath = Paths.get(System.getProperty("user.home"), "jfxmirror", "pr",
                 pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead());
         if (!Files.exists(statusPath)) {
@@ -24,14 +26,24 @@ public class StatusPage {
                 "    <title>Status: PR #" + pullRequestContext.getPrNum() + " (" + pullRequestContext.getPrShaHead() + ")</title>\n" +
                 "  </head>\n" +
                 "  <body>\n" +
-                "      <p>OCA: " + pullRequestContext.getOcaStatus().getDescription() + "</p>" +
-                "      <p>JBS Bug(s): " + getJbsBugHtml(pullRequestContext.getJbsBugsReferenced(), pullRequestContext.getJbsBugsReferencedButNotFound()) + "</p>" +
-                "      <p>Mercurial Patch: <a href=\"./patch/" + pullRequestContext.getPrNum() + ".patch\">View</a></p>" +
-                "      <p>Webrev: <a href=\"./webrev/\">View</a> | <a href=\"./webrev.zip\">Download</a></p>" +
-                "      <p>jcheck: <a href=\"./jcheck.txt\">View</a></p>" +
+                (pullRequestContext.getPrStatus() == PrStatus.SUCCESS ?
+                        ("    <p style=\"color:green\">Success!</p>" +
+                                "    <p>OCA: " + pullRequestContext.getOcaStatus().getDescription() + "</p>\n" +
+                                "    <p>JBS Bug(s): " + getJbsBugHtml(pullRequestContext.getJbsBugsReferenced(),
+                                pullRequestContext.getJbsBugsReferencedButNotFound()) + "</p>\n" +
+                                "    <p>Mercurial Patch: <a href=\"./patch/" + pullRequestContext.getPrNum() + ".patch\">View</a></p>\n" +
+                                "    <p>Webrev: <a href=\"./webrev/\">View</a> | <a href=\"./webrev.zip\">Download</a></p>\n" +
+                                "    <p>jcheck: <a href=\"./jcheck.txt\">View</a></p>\n")
+                        : ("    <p style=\"color:red\">Failed!</p>\n" +
+                        "    <p>Patch rejects: " + getRejectsHtml(pullRequestContext.getRejects()) + "</p>\n")) +
                 "  </body>\n" +
                 "</html>\n";
         Files.write(statusPath.resolve("index.html"), statusPage.getBytes(UTF_8));
+    }
+
+    private static String getRejectsHtml(List<Path> rejects)
+    {
+        return null;
     }
 
     private static String getJbsBugHtml(Collection<String> jbsBugsReferenced,

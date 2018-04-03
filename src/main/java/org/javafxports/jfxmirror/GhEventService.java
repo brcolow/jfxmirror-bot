@@ -454,9 +454,25 @@ public class GhEventService {
         // "mergeability", that would ensure that conflicts don't happen when merging to upstream.
         // Apply the hg patch to our local upstream hg repo.
         try {
-            List<java.nio.file.Path> rejects = applyHgPatch(hgPatchPath);
-            if (!rejects.isEmpty()) {
-                logger.debug("Found rejects: " + rejects);
+            List<java.nio.file.Path> originalRejects = applyHgPatch(hgPatchPath);
+            if (!originalRejects.isEmpty()) {
+                List<java.nio.file.Path> copiedRejects = new ArrayList<>(originalRejects.size());
+                java.nio.file.Path rejectsPath = Paths.get(USER_HOME, "jfxmirror", "pr",
+                        pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(), "rejects");
+                if (!Files.exists(rejectsPath)) {
+                    Files.createDirectories(rejectsPath);
+                }
+                for (java.nio.file.Path reject : originalRejects) {
+                    java.nio.file.Path copiedReject = rejectsPath.resolve(reject.getFileName());
+                    Files.copy(reject, copiedReject);
+                    copiedRejects.add(copiedReject);
+                }
+                pullRequestContext.setRejects(copiedRejects);
+                pullRequestContext.setPrStatus(PrStatus.FAILURE);
+                StatusPage.createStatusPageHtml(pullRequestContext);
+                setPrStatus(PrStatus.FAILURE, pullRequestContext.getPrNum(), pullRequestContext.getPrShaHead(),
+                        pullRequestContext.getStatusUrl(), "Could not merge PR into upstream.", tipBeforeImport);
+                return Response.ok().build();
             }
         } catch (IOException | ExecutionException e) {
             return setError(pullRequestContext, tipBeforeImport,
@@ -500,20 +516,21 @@ public class GhEventService {
             return setError(pullRequestContext, tipBeforeImport, "Could not generate webrev for PR.", e);
         }
 
+        // If we get this far, then we can set PR status to success.
+        pullRequestContext.setPrStatus(PrStatus.SUCCESS);
+        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
+
         // Create the status page "pr/{prNum}/{prShaHead}/index.html" from the above data (that is linked to by
         // the jfxmirror_bot PR status check).
         try {
             StatusPage.createStatusPageHtml(pullRequestContext);
         } catch (IOException e) {
-            return setError(pullRequestContext, tipBeforeImport, "Could not create status page.", e);
+            throw new RuntimeException(e);
         }
 
         // Rollback upstream hg repository to "tipBeforeImport".
         // TODO: Instead of doing this, we could create a temporary branch to work on before importing the GH PR.
         rollback(tipBeforeImport);
-
-        // If we get this far, then we can set PR status to success.
-        setPrStatus(PrStatus.SUCCESS, prNum, prShaHead, statusUrl, "Ready to merge with upstream.", tipBeforeImport);
 
         return Response.ok().build();
     }

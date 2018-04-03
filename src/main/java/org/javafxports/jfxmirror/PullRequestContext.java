@@ -1,6 +1,8 @@
 package org.javafxports.jfxmirror;
 
+import java.nio.file.Path;
 import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -15,6 +17,8 @@ public class PullRequestContext {
     private OcaStatus ocaStatus;
     private Set<String> jbsBugsReferenced;
     private Set<String> jbsBugsReferencedButNotFound;
+    private List<Path> rejects;
+    private PrStatus prStatus;
 
     public PullRequestContext(JsonNode pullRequest, String prNum, String prShaHead, String statusUrl) {
         Objects.requireNonNull(pullRequest, "pullRequest must not be null");
@@ -65,5 +69,21 @@ public class PullRequestContext {
 
     void setJbsBugsReferencedButNotFound(Set<String> jbsBugsReferencedButNotFound) {
         this.jbsBugsReferencedButNotFound = jbsBugsReferencedButNotFound;
+    }
+
+    void setRejects(List<Path> rejects) {
+        this.rejects = rejects;
+    }
+
+    public List<Path> getRejects() {
+        return Collections.unmodifiableList(rejects);
+    }
+
+    void setPrStatus(PrStatus prStatus) {
+        this.prStatus = prStatus;
+    }
+
+    public PrStatus getPrStatus() {
+        return prStatus;
     }
 }
